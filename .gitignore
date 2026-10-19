@@ -1,0 +1,51 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+
+# Python virtual environments
+.venv/
+venv/
+
+# PyInstaller build products
+/build/
+/dist/
+/build-*/
+/dist-*/
+/gallery-dl.spec
+/spotdl.spec
+
+# Embedded frontend dependencies
+node_modules/
+
+# Logs and temporary files
+*.log
+logs/
+log/
+tmp/
+temp/
+.cache/
+*.tmp
+*.temp
+
+# Local environment settings
+.env
+.env.*
+!.env.example
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Downloaded third-party executables (distributed with Release installers)
+/tools/*.exe
+/tools/*.dll
+
+# Local screenshots, live API responses and machine-specific verification logs
+/verification/*
+!/verification/portal-security.js

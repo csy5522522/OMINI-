@@ -31,6 +31,8 @@ from timetable_page import TimetablePage
 from icloud_notes_page import ICloudNotesPage
 from brightdata_page import BrightDataPage
 from folder_sync_page import FolderSyncPage
+from updater_page import UpdatePanel
+from updater import launch_installer
 
 # Required when the optional school login browser is first opened after startup.
 if QApplication.instance() is None:
@@ -38,7 +40,7 @@ if QApplication.instance() is None:
 
 
 APP_NAME = "Omini工具箱"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
 SETTINGS_FILE = APP_DIR / "settings.json"
 TASKS_FILE = APP_DIR / "tasks.json"
@@ -1142,7 +1144,10 @@ class SettingsPage(QWidget):
     def __init__(self, settings: dict[str, Any]):
         super().__init__()
         self.settings = settings
-        layout = QVBoxLayout(self); layout.setContentsMargins(32, 28, 32, 28)
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        content = QWidget(); scroll.setWidget(content); outer.addWidget(scroll)
+        layout = QVBoxLayout(content); layout.setContentsMargins(32, 28, 32, 28)
         title = QLabel("设置"); title.setObjectName("pageTitle"); layout.addWidget(title)
         box = QGroupBox("下载设置"); form = QFormLayout(box)
         self.download_dir = FolderField(settings["download_dir"])
@@ -1151,7 +1156,10 @@ class SettingsPage(QWidget):
         form.addRow("默认保存目录", self.download_dir); form.addRow("同时下载任务数", self.concurrency); form.addRow("界面主题", self.theme)
         save = QPushButton("保存设置"); save.setObjectName("primary"); save.clicked.connect(self.save)
         form.addRow("", save)
-        layout.addWidget(box); layout.addStretch()
+        layout.addWidget(box)
+        self.updates = UpdatePanel(APP_VERSION, APP_DIR / "updates", self)
+        layout.addWidget(self.updates)
+        layout.addStretch()
 
     def save(self) -> None:
         self.settings.update({"download_dir": self.download_dir.text(), "concurrency": self.concurrency.value(), "theme": self.theme.currentText()})
@@ -1167,6 +1175,7 @@ class MainWindow(QMainWindow):
         self.settings = {"download_dir": default_download_dir(), "concurrency": 2, "theme": "深色"}
         self.settings.update(load_json(SETTINGS_FILE, {}))
         self.manager = TaskManager(self.settings)
+        self.pending_update = None
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.setWindowIcon(QIcon(str(resource_path("assets/omini_icon.ico"))))
         self.resize(1280, 860)
@@ -1233,6 +1242,7 @@ class MainWindow(QMainWindow):
         self.icloud_page = ICloudNotesPage(APP_DIR / "icloud-notes.json", self)
         self.stack.addWidget(self.icloud_page)
         self.settings_page = SettingsPage(self.settings); self.settings_page.settings_changed.connect(self.on_settings_changed); self.stack.addWidget(self.settings_page)
+        self.settings_page.updates.install_requested.connect(self.install_update)
         self.brightdata_page = BrightDataPage(APP_DIR / "brightdata.json", self)
         self.stack.addWidget(self.brightdata_page)
         self.sync_page = FolderSyncPage(APP_DIR / "sync", self)
@@ -1246,6 +1256,11 @@ class MainWindow(QMainWindow):
     def open_folder_sync(self) -> None:
         self.nav.setCurrentRow(6)
         self.restore_window()
+
+    def install_update(self, artifact) -> None:
+        self.pending_update = artifact
+        self.quitting = True
+        self.close()
 
     def restore_window(self) -> None:
         self.showNormal()
@@ -1334,6 +1349,7 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(self, "退出工具箱", f"仍有 {active} 个下载任务在进行。退出后将暂停这些任务，确定退出吗？")
             if answer != QMessageBox.StandardButton.Yes:
                 self.quitting = False
+                self.pending_update = None
                 event.ignore(); return
             for task_id in list(self.manager.workers):
                 self.manager.pause(task_id)
@@ -1341,14 +1357,18 @@ class MainWindow(QMainWindow):
         if not self.icloud_page.flush():
             answer = QMessageBox.question(self, "本地备忘录尚未保存", "本地备忘录保存失败。仍要退出并放弃未保存的编辑吗？")
             if answer != QMessageBox.StandardButton.Yes:
-                self.quitting = False; event.ignore(); return
+                self.quitting = False; self.pending_update = None; event.ignore(); return
         self.campus_page.stop()
         self.timetable_page.stop()
         self.icloud_page.stop()
         self.brightdata_page.stop()
         self.sync_page.stop()
+        self.settings_page.updates.stop()
         pending = [page.worker for page in (self.campus_page, self.timetable_page, self.icloud_page, self.brightdata_page, self.sync_page)
                    if page.worker and page.worker.isRunning()]
+        update_worker = self.settings_page.updates.worker
+        if update_worker and update_worker.isRunning():
+            pending.append(update_worker)
         if pending:
             self.quitting = True
             # A thread may finish between isRunning() and connecting finished.
@@ -1366,10 +1386,20 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     window = MainWindow(); window.show()
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    if window.pending_update:
+        try:
+            launch_installer(window.pending_update)
+        except (ValueError, OSError):
+            QMessageBox.warning(None, "更新安装未启动", "安装包读取或启动失败，请重新打开工具箱并再次下载安装。")
+            exit_code = 1
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
+    if "--self-test-update" in sys.argv:
+        from update_self_test import run_update_test
+        sys.exit(run_update_test(sys.modules[__name__]))
     if "--self-test-sync" in sys.argv:
         from sync_self_test import run_sync_test
         sys.exit(run_sync_test(sys.modules[__name__]))

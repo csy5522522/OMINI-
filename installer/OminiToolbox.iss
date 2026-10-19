@@ -1,6 +1,6 @@
 ; Build with Inno Setup 6.7.3+ (ISCC.exe). Paths are relative to this script.
 #ifndef AppVersion
-  #define AppVersion "1.1.1"
+  #define AppVersion "1.1.2"
 #endif
 #ifndef ReleaseDir
   #define ReleaseDir "..\dist-sync-" + AppVersion + "\Omini工具箱"
@@ -63,5 +63,6 @@ begin
   WizardForm.WelcomeLabel2.Caption := '此向导将把 Omini工具箱安装到您的电脑。' + #13#10#13#10 +
     '您可以选择安装位置和桌面快捷方式。安装后可从开始菜单打开程序。' + #13#10#13#10 +
     '文件夹同步支持 Tailscale、设备 ID 配对，以及手动、定时和自动同步。' + #13#10#13#10 +
+    '可在设置中检查 GitHub 更新并下载安装。' + #13#10#13#10 +
     '卸载会保留个人设置和已同步文件。';
 end;

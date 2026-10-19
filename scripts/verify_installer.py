@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +34,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     setup = Path(sys.argv[1]).resolve()
     assert setup.is_file()
+    version = re.search(r"(\d+\.\d+\.\d+)-Setup\.exe$", setup.name)[1]
     if uninstall_entry():
         raise RuntimeError("A user installation already exists; verification stopped before changing it.")
     report = {"installer": str(setup)}
@@ -63,12 +65,12 @@ def main():
             installed = True
             entry = uninstall_entry()
             assert entry and Path(entry["InstallLocation"]).resolve() == target.resolve()
-            report["installed_app_registration"] = entry["DisplayName"] == "Omini工具箱" and entry["DisplayVersion"] == "1.1.1"
+            report["installed_app_registration"] = entry["DisplayName"] == "Omini工具箱" and entry["DisplayVersion"] == version
             app = target / "Omini工具箱.exe"
             report["complete_install"] = all((target / item).is_file() for item in
                 ("Omini工具箱.exe", "tools/syncthing.exe", "_internal/python311.dll", "安装版使用说明.txt", "unins000.exe"))
             assert report["complete_install"]
-            source = root / "dist-sync-1.1.1/Omini工具箱"
+            source = root / f"dist-sync-{version}/Omini工具箱"
             for name in ("Omini工具箱.exe", "tools/syncthing.exe"):
                 with (source / name).open("rb") as original, (target / name).open("rb") as copied:
                     assert hashlib.file_digest(original, "sha256").digest() == hashlib.file_digest(copied, "sha256").digest()
@@ -80,6 +82,10 @@ def main():
             app_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
             assert app_report and all(value is True for value in app_report.values())
             report["installed_sync_smoke"] = True
+            run([str(app), "--self-test-update"], environment)
+            update_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
+            assert update_report and all(value is True for value in update_report.values())
+            report["installed_update_smoke"] = True
             run(command, environment)
             assert user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["upgrade_preserves_user_files"] = True

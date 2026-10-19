@@ -9,7 +9,7 @@ import zipfile
 
 def package():
     root = Path(__file__).resolve().parents[1]
-    version = sys.argv[1] if len(sys.argv) > 1 else "1.1.1"
+    version = sys.argv[1] if len(sys.argv) > 1 else "1.1.2"
     if not all(part.isdigit() for part in version.split(".")):
         raise ValueError("Version should contain dot-separated numbers")
     release_root = root / ("dist-sync-" + version)

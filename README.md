@@ -2,7 +2,17 @@
 
 Windows 桌面工具箱。包含下载中心、校园网、课表、备忘录、Bright Data 和多电脑文件夹同步。
 
-当前版本 **1.1.1**：[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.1)。下载 `Omini工具箱-1.1.1-Setup.exe` 后运行安装向导，无需单独复制程序依赖。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **1.1.2**：[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.2)。下载 `Omini-Toolbox-1.1.2-Setup.exe` 后运行安装向导，无需单独复制程序依赖。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 检查与安装更新
+
+进入「设置 → 软件更新」，点击「检查更新」。程序从 `csy5522522/OMINI-` 的 GitHub 最新正式 Release 比较版本，发现新版后启用「下载更新」。下载支持进度和取消，完成后校验文件大小与 SHA-256；校验通过后点击「退出并安装更新」。工具箱完成下载任务处理、保存和后台服务退出后才启动安装向导。安装器沿用原安装位置，保留个人设置和同步数据。
+
+仓库为私有时，每台电脑需要填写有权访问该仓库的 GitHub Token。建议使用仅选择此仓库、Contents 为只读的细粒度 Token；公开仓库可以留空。可勾选 Windows 本机加密保存；取消勾选并保存会移除已保存 Token。凭据只用于 GitHub API，下载跳转到 GitHub 文件分发域名时不转发 Token，安装包不内置账号凭据。
+
+更新配置位于 `%APPDATA%/Omini工具箱/updates/credentials.json`，安装包缓存位于同目录的 `downloads/版本号/`。下载安装前均校验文件完整性，不自动安装较旧版本、预览版或缺少校验信息的附件。更新源使用 [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)。
+
+从旧版首次升级到带此按钮的 1.1.2，请先手动运行一次新安装包；之后可在程序内检查和下载安装后续版本。测试：`python -m unittest tests.test_updater -v`。
 
 ## 本地运行
 
@@ -17,11 +27,11 @@ py -3.11 app.py
 
 ### Windows 安装版
 
-发布安装包位于 `dist-installer-1.1.1/Omini工具箱-1.1.1-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+发布安装包位于 `dist-installer-1.1.2/Omini工具箱-1.1.2-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.1.1/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。
+已有完整 `dist-sync-1.1.2/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。
 
 ### 开发用目录发布包
 
@@ -29,7 +39,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.1`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.2`。
 
 `build.ps1` 会下载 yt-dlp 的官方 Windows 发行版、复制本机的 aria2c/ffmpeg，并将图库和 Spotify 引擎打成独立的 Windows 可执行文件。
 应用窗口、托盘、侧栏品牌及 EXE 均使用 `assets/` 中的 Omini 图标；打包时会一并收集图标资源。
@@ -40,7 +50,7 @@ M3U8 页签通过 yt-dlp 的 HLS 原生分片下载器获取播放列表，支�
 
 支持手动选择 Netscape cookies.txt 或 `name=value;` Cookie 请求头文本（包含 `Cookie:` 前缀也可）。请求头在任务期间临时转换，结束后删除临时文件。Chrome/Edge 会话只在用户主动点击对应按钮时读取。
 
-发布包必须保留 `tools/yt-dlp-plugins/`，否则抖音会退回原解析路径。窗口标题显示版本 `1.1.1`，便于与旧发布包区分。
+发布包必须保留 `tools/yt-dlp-plugins/`，否则抖音会退回原解析路径。窗口标题显示版本 `1.1.2`，便于与旧发布包区分。
 
 支持抖音 `/note/` 图文分享链接：在视频页或图库页粘贴即可识别，下载全部公开图片，队列显示为“图文”；图文不伪装为 MP4。公开分享页缺少图片时打开临时、内存会话的浏览器解析窗口；页面如有登录或验证需由用户完成，再点击“重新解析已加载图片”。不读取已有浏览器登录数据库，不保存该窗口的 Cookie。浏览器回退仅用于公开图文图片，不下载评论表情、头像或推荐封面。
 

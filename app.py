@@ -1,12 +1,18 @@
-"""Omini工具箱 - 下载、校园网、课表、备忘录与网页搜索抓取。"""
+"""Omini工具箱 - 下载、校园网、课表、备忘录、网页抓取、同步与 Omini API。"""
 from __future__ import annotations
+
+import sys
+
+# API workers use the same executable in frozen distributions, before Qt starts.
+if __name__ == "__main__" and sys.argv[1:2] == ["--omini-api"]:
+    from omini_api.runtime import main as run_omini_api
+    raise SystemExit(run_omini_api(sys.argv[2:]))
 
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -31,8 +37,10 @@ from timetable_page import TimetablePage
 from icloud_notes_page import ICloudNotesPage
 from brightdata_page import BrightDataPage
 from folder_sync_page import FolderSyncPage
+from omini_api_page import OminiApiPage
 from updater_page import UpdatePanel
 from updater import launch_installer
+from app_version import APP_VERSION
 
 # Required when the optional school login browser is first opened after startup.
 if QApplication.instance() is None:
@@ -40,7 +48,6 @@ if QApplication.instance() is None:
 
 
 APP_NAME = "Omini工具箱"
-APP_VERSION = "1.1.2"
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
 SETTINGS_FILE = APP_DIR / "settings.json"
 TASKS_FILE = APP_DIR / "tasks.json"
@@ -1189,6 +1196,7 @@ class MainWindow(QMainWindow):
         menu.addAction("打开工具箱", self.restore_window)
         menu.addAction("校园网立即登录", self.campus_page.manual_login)
         menu.addAction("打开文件夹同步", self.open_folder_sync)
+        menu.addAction("打开 Omini API", self.open_omini_api)
         menu.addSeparator()
         menu.addAction("退出工具箱", self.quit_from_tray)
         self.tray.setContextMenu(menu)
@@ -1219,7 +1227,7 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(24)
         self.nav = QListWidget(); self.nav.setObjectName("navigation")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "☁  iCloud 备忘录", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "＋  更多工具（敬请期待）"):
+        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "☁  iCloud 备忘录", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "＋  更多工具（敬请期待）"):
             item = QListWidgetItem(label); item.setSizeHint(item.sizeHint() + QSize(0, 12)); self.nav.addItem(item)
         self.nav.setCurrentRow(0); self.nav.currentRowChanged.connect(self.change_page)
         side_layout.addWidget(self.nav, 1)
@@ -1247,11 +1255,17 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.brightdata_page)
         self.sync_page = FolderSyncPage(APP_DIR / "sync", self)
         self.stack.addWidget(self.sync_page)
+        self.omini_api_page = OminiApiPage(self.settings, lambda value: save_json(SETTINGS_FILE, value), self)
+        self.stack.addWidget(self.omini_api_page)
         placeholder = QLabel("更多工具正在规划中")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stack.addWidget(placeholder)
         layout.addWidget(self.stack, 1)
-        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · iCloud 备忘录 · Bright Data · 文件夹同步")); self.menuBar().addAction(about)
+        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · iCloud 备忘录 · Bright Data · 文件夹同步 · Omini API")); self.menuBar().addAction(about)
+
+    def open_omini_api(self) -> None:
+        self.nav.setCurrentRow(7)
+        self.restore_window()
 
     def open_folder_sync(self) -> None:
         self.nav.setCurrentRow(6)
@@ -1273,6 +1287,8 @@ class MainWindow(QMainWindow):
 
     def change_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
+        if hasattr(self, "omini_api_page") and self.stack.currentWidget() is self.omini_api_page:
+            self.omini_api_page.ensure_started()
 
     def on_settings_changed(self, settings: dict[str, Any]) -> None:
         self.manager.settings = settings
@@ -1304,6 +1320,7 @@ class MainWindow(QMainWindow):
             palette.setColor(role, QColor(color))
         QApplication.instance().setPalette(palette)
         self.icloud_page.apply_theme(dark)
+        self.omini_api_page.apply_theme(dark)
         if dark:
             self.setStyleSheet("""
                 QWidget { background: #111827; color: #e5e7eb; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
@@ -1363,6 +1380,7 @@ class MainWindow(QMainWindow):
         self.icloud_page.stop()
         self.brightdata_page.stop()
         self.sync_page.stop()
+        self.omini_api_page.stop()
         self.settings_page.updates.stop()
         pending = [page.worker for page in (self.campus_page, self.timetable_page, self.icloud_page, self.brightdata_page, self.sync_page)
                    if page.worker and page.worker.isRunning()]
@@ -1397,6 +1415,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--self-test-omini-api" in sys.argv:
+        from omini_api_self_test import run_api_test
+        sys.exit(run_api_test(sys.modules[__name__]))
     if "--self-test-update" in sys.argv:
         from update_self_test import run_update_test
         sys.exit(run_update_test(sys.modules[__name__]))

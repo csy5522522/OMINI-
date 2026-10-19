@@ -1,9 +1,15 @@
-Omini工具箱 1.1.2 · Windows 安装版
+Omini工具箱 1.1.3 · Windows 安装版
 
 安装与启动
-双击 Omini工具箱-1.1.2-Setup.exe，选择安装目录后点击安装。
+双击 Omini-Toolbox-1.1.3-Setup.exe，选择安装目录后点击安装。
 安装会自动放置完整程序、依赖和同步引擎。
 安装完成后从开始菜单或桌面快捷方式运行 Omini工具箱。
+
+Omini API
+打开侧栏「Omini API」，即可使用 Codex 注册、网站搜索、号池账号、号池网站、Claude 独立、设置与分组和日志。
+本机已有 Desktop/Omini Open Ai/Omini API 时继续使用原账号和配置；也可点击「选择目录」选择原工具目录。
+新电脑的数据默认保存在 %APPDATA%/Omini工具箱/omini-api/。
+切换侧栏后 API 任务继续运行；退出工具箱时保存配置并停止 API 子进程。
 
 多电脑文件夹同步
 1. 两台电脑都启动同步程序。

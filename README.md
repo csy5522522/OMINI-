@@ -1,12 +1,12 @@
 # Omini工具箱
 
-Windows 桌面工具箱。包含下载中心、校园网、课表、备忘录、Bright Data 和多电脑文件夹同步。
+Windows 桌面工具箱。包含下载中心、校园网、课表、备忘录、Bright Data、多电脑文件夹同步和 Omini API。
 
-当前版本 **1.1.2**：[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.2)。下载 `Omini-Toolbox-1.1.2-Setup.exe` 后运行安装向导，无需单独复制程序依赖。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **1.1.3**：[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.3)。下载 `Omini-Toolbox-1.1.3-Setup.exe` 后运行安装向导，无需单独复制程序依赖。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
 ## 新增 Web 版（下载中心 + 学校课表）
 
-双击源码根目录的 `Start-Omini-Web.cmd`，或运行 `python web_server.py --open`，在浏览器打开 `http://127.0.0.1:18765`。提供重新设计的深浅主题界面、下载队列与文件取回、学校课表导入和周视图。需使用源码运行环境与下载引擎；1.1.2 桌面安装包不包含此新增入口。
+双击源码根目录的 `Start-Omini-Web.cmd`，或运行 `python web_server.py --open`，在浏览器打开 `http://127.0.0.1:18765`。提供重新设计的深浅主题界面、下载队列与文件取回、学校课表导入和周视图。Web 入口需使用源码运行环境与下载引擎，Windows 安装包提供桌面版。
 
 支持绑定本机 Tailscale IPv4 后从其他组网设备访问，下载仍由服务电脑处理。Web 队列与课表独立保存。启动参数、远程访问密码和课表导入方法见 [Web 版使用说明](web/README.md)。
 
@@ -22,6 +22,8 @@ Windows 桌面工具箱。包含下载中心、校园网、课表、备忘录、
 
 ## 本地运行
 
+双击 `Start-Omini-Desktop.cmd` 可启动桌面版。
+
 ```powershell
 py -3.11 -m pip install -r requirements.txt
 py -3.11 app.py
@@ -29,15 +31,27 @@ py -3.11 app.py
 
 开发环境下，应用会优先从 `tools/` 查找下载引擎，找不到时使用 PATH 中的 `yt-dlp`、`aria2c`、`ffmpeg`、`gallery-dl`、`spotdl`。
 
+## Omini API（桌面版新增）
+
+侧栏「Omini API」内嵌原工具的全部七个页面：Codex 注册、网站搜索、号池账号、号池网站、Claude 独立、设置与分组、日志。支持原有的账号注册、邮箱验证、Key 与分组管理、余额查询与轮换，以及 OpenAI / Claude 本地代理。首次进入时启动，切换侧栏后任务继续运行；浅色和深色模式与工具箱同步。
+
+本机已有 `Desktop/Omini Open Ai/Omini API` 目录时，首次使用会读取该目录，保留原有账号与配置。也可点击「选择目录」选取其他原工具目录或新数据目录。目录选择记入工具箱设置；新电脑默认使用 `%APPDATA%/Omini工具箱/omini-api/`。切换目录会保存并停止当前 API 任务，随后载入新目录；退出工具箱时保存配置并停止 API 子进程。
+
+界面和后台模块随程序打包，发布包运行无需另装 Python，账号、邮箱服务凭据和个人站点文件均留在所选数据目录中。原独立工具保持可用；如使用相同数据目录及代理端口，建议从一个入口运行任务。
+
+验证：`py -3.11 -m unittest tests.test_omini_api tests.omini_api.test_omini_multisite tests.omini_api.test_omini_site_discovery tests.omini_api.test_local_proxy_paths -v`。
+
+使用现有依赖生成包含本功能的独立发布目录：`./scripts/build_omini_api.ps1`，结果在 `dist-omini-api/Omini工具箱/`。源码与 EXE 都可使用 `--self-test-omini-api` 验证完整桌面接入，测试使用临时数据目录。
+
 ## 打包
 
 ### Windows 安装版
 
-发布安装包位于 `dist-installer-1.1.2/Omini工具箱-1.1.2-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+发布安装包位于 `dist-installer-1.1.3/Omini工具箱-1.1.3-Setup.exe`，GitHub 附件名为 `Omini-Toolbox-1.1.3-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.1.2/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。
+已有完整 `dist-sync-1.1.3/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -45,7 +59,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.2`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.3`。
 
 `build.ps1` 会下载 yt-dlp 的官方 Windows 发行版、复制本机的 aria2c/ffmpeg，并将图库和 Spotify 引擎打成独立的 Windows 可执行文件。
 应用窗口、托盘、侧栏品牌及 EXE 均使用 `assets/` 中的 Omini 图标；打包时会一并收集图标资源。
@@ -56,7 +70,7 @@ M3U8 页签通过 yt-dlp 的 HLS 原生分片下载器获取播放列表，支�
 
 支持手动选择 Netscape cookies.txt 或 `name=value;` Cookie 请求头文本（包含 `Cookie:` 前缀也可）。请求头在任务期间临时转换，结束后删除临时文件。Chrome/Edge 会话只在用户主动点击对应按钮时读取。
 
-发布包必须保留 `tools/yt-dlp-plugins/`，否则抖音会退回原解析路径。窗口标题显示版本 `1.1.2`，便于与旧发布包区分。
+发布包必须保留 `tools/yt-dlp-plugins/`，否则抖音会退回原解析路径。窗口标题显示版本 `1.1.3`，便于与旧发布包区分。
 
 支持抖音 `/note/` 图文分享链接：在视频页或图库页粘贴即可识别，下载全部公开图片，队列显示为“图文”；图文不伪装为 MP4。公开分享页缺少图片时打开临时、内存会话的浏览器解析窗口；页面如有登录或验证需由用户完成，再点击“重新解析已加载图片”。不读取已有浏览器登录数据库，不保存该窗口的 Cookie。浏览器回退仅用于公开图文图片，不下载评论表情、头像或推荐封面。
 

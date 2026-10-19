@@ -1,11 +1,16 @@
 param(
-    [string]$Version = '1.1.2',
+    [string]$Version = '',
     [string]$Compiler = '',
     [string]$ReleaseDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $installerRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$sourceVersion = & py -3.11 (Join-Path $installerRoot 'app_version.py')
+if ($LASTEXITCODE -ne 0) { throw 'Application version could not be read.' }
+$sourceVersion = $sourceVersion.Trim()
+if (-not $Version) { $Version = $sourceVersion }
+if ($Version -ne $sourceVersion) { throw 'Installer version must match app_version.py. Check out the corresponding tag to build an earlier release.' }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must have three numeric components.' }
 $releasePath = $ReleaseDir
 if (-not $releasePath) {

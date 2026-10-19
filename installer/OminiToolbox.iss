@@ -1,6 +1,6 @@
 ; Build with Inno Setup 6.7.3+ (ISCC.exe). Paths are relative to this script.
 #ifndef AppVersion
-  #define AppVersion "1.1.2"
+  #error Build with scripts/build_installer.ps1 to supply the application version.
 #endif
 #ifndef ReleaseDir
   #define ReleaseDir "..\dist-sync-" + AppVersion + "\Omini工具箱"

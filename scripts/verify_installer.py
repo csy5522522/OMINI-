@@ -86,6 +86,14 @@ def main():
             update_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
             assert update_report and all(value is True for value in update_report.values())
             report["installed_update_smoke"] = True
+            api_environment = environment.copy()
+            api_environment.pop("QT_QPA_PLATFORM", None)
+            api_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "api-check.json")
+            api_environment["OMINI_API_TEST_SCREENSHOT"] = str(root / "verification/installer-api.png")
+            run([str(app), "--self-test-omini-api"], api_environment)
+            api_report = json.loads((temp_root / "api-check.json").read_text(encoding="utf-8"))
+            assert api_report.get("ok") is True and len(api_report.get("tabs", [])) == 7
+            report["installed_api_smoke"] = True
             run(command, environment)
             assert user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["upgrade_preserves_user_files"] = True

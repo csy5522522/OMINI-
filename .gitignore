@@ -64,3 +64,9 @@ desktop.ini
 **/ai-assistants/auths/
 **/ai-assistants/codex-pool/
 **/ai-assistants/settings.json
+**/ai-assistants/settings.json.bak
+**/ai-assistants/state.json
+**/ai-assistants/state.json.bak
+**/ai-assistants/history/
+**/ai-assistants/backups/
+**/ai-assistants/recovery/

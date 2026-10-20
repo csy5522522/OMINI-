@@ -236,18 +236,21 @@ class LiveGatewayTests(unittest.TestCase):
         self.config = core.pool_config(self.root, self.pool)
         self.config_path = self.root / "config.yaml"
         self.process = None
+        self.log_handle = None
         self.client = core.PoolClient(self.pool)
 
     def start(self):
         core.atomic_json(self.config_path, self.config)
+        if self.log_handle is None:
+            self.log_handle = (self.root / "gateway.log").open("ab")
         self.process = subprocess.Popen([str(ENGINE), "--config", str(self.config_path), "--local-model"],
-                                        cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        cwd=self.root, stdout=self.log_handle, stderr=subprocess.STDOUT,
                                         creationflags=subprocess.CREATE_NO_WINDOW,
                                         env=core.proxy_environment({"mode": "direct"}))
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                self.fail(self.process.stdout.read().decode("utf-8", "replace"))
+                self.fail((self.root / "gateway.log").read_text(encoding="utf-8", errors="replace"))
             try:
                 self.client.accounts()
                 return
@@ -263,6 +266,8 @@ class LiveGatewayTests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.communicate(timeout=5)
+        if self.log_handle is not None:
+            self.log_handle.close()
         self.temporary.cleanup()
 
     def test_real_import_status_models_restart_and_delete(self):
@@ -357,7 +362,7 @@ class PageTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_page_profiles_save_independently_and_pool_is_opt_in(self):
-        self.assertEqual(self.page.tabs.count(), 6)
+        self.assertEqual(self.page.tabs.count(), 7)
         self.assertFalse(self.page.is_running)
         self.assertFalse(self.page.login_button.isEnabled())
         codex, gemini = self.page.profiles["codex"], self.page.profiles["gemini"]

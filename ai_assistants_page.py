@@ -4,8 +4,10 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,17 +15,19 @@ from PySide6.QtCore import QLockFile, QProcess, QProcessEnvironment, QThread, QT
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QMessageBox, QPlainTextEdit,
+    QDialog, QDialogButtonBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from ai_assistants import (
-    ASSISTANTS, ENGINE_REPO, ENGINE_VERSION, AssistantStore, PoolClient, atomic_json,
+    ASSISTANTS, ENGINE_REPO, ENGINE_VERSION, SCHEDULING, AssistantStore, PoolClient, atomic_json,
     available_port, detect_program, engine_path, install_engine, launch_assistant,
     pool_config, powershell_environment, proxy_environment, redact, test_connection,
-    validate_profile, validate_proxy,
+    member_rule, remember_member_rules, validate_profile, validate_proxy,
 )
+from codex_quota import quota_cell
+from assistant_data import AssistantState, OperationHistory, backup_credentials, history_line, local_members, settings_fingerprint
 
 
 class AssistantWorker(QThread):
@@ -129,12 +133,15 @@ class AssistantProfile(QWidget):
         self.no_proxy.setEnabled(self.mode.currentData() != "inherit")
 
     def value(self):
-        return validate_profile(self.name, {
+        return validate_profile(self.name, self.raw_value())
+
+    def raw_value(self):
+        return {
             "mode": self.mode.currentData(), "proxy": self.proxy.text().strip(),
             "no_proxy": self.no_proxy.text().strip(), "program": self.program.text().strip(),
             "cwd": self.cwd.text().strip(), "args": self.args.toPlainText().splitlines(),
             "desktop": self.name == "codex" and self.kind.currentIndex() == 1,
-        })
+        }
 
     def detect(self):
         desktop = self.name == "codex" and self.kind.currentIndex() == 1
@@ -142,8 +149,10 @@ class AssistantProfile(QWidget):
             if value:
                 self.program.setText(value)
                 self.status.setText("已找到程序；保存后即可带代理启动。")
+                self.owner.report(ASSISTANTS[self.name][0] + "：程序检测成功。", "profile.detect")
             else:
                 self.status.setText("未检测到程序，请安装该助手或手动选择程序文件。")
+                self.owner.report(ASSISTANTS[self.name][0] + "：未检测到程序。", "profile.detect")
         self.owner.run_action(lambda _: detect_program(self.name, desktop), found)
 
     def choose_program(self):
@@ -160,6 +169,7 @@ class AssistantProfile(QWidget):
         try:
             QApplication.clipboard().setText(powershell_environment(self.value()))
             self.status.setText("已复制代理环境，在新的 PowerShell 中粘贴后可运行助手命令。")
+            self.owner.report(ASSISTANTS[self.name][0] + "：已复制代理环境。", "profile.copy_environment")
         except ValueError as error:
             self.owner.report(str(error))
 
@@ -169,6 +179,16 @@ class AiAssistantsPage(QWidget):
         super().__init__(parent)
         self.store = AssistantStore(root)
         self.root = self.store.root
+        self.state_store = AssistantState(self.root)
+        self.history = OperationHistory(self.root)
+        self.load_warning = self.store.error or self.state_store.error
+        fingerprint = settings_fingerprint(self.store.data)
+        self.saved_draft = (self.state_store.data.get("draft", {})
+                            if self.state_store.data.get("settings_fingerprint", fingerprint) == fingerprint else {})
+        self._restoring = True
+        self._pending_changes = set()
+        self.service_wanted = bool(self.state_store.data.get("service_wanted", False))
+        self._stop_requested = False
         self.worker = None
         self.stopping = False
         self.ready = False
@@ -179,6 +199,13 @@ class AiAssistantsPage(QWidget):
         self.login_started = 0.0
         self.started_at = 0.0
         self.accounts = []
+        self.quotas = copy.deepcopy(self.state_store.data.get("quotas", {}))
+        for snapshot in self.quotas.values():
+            snapshot["cached"] = True
+        self.save_timer = QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.setInterval(700)
+        self.save_timer.timeout.connect(self.save_session)
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self.read_output)
@@ -201,8 +228,11 @@ class AiAssistantsPage(QWidget):
         layout.addWidget(subtitle)
         self.tabs = QTabWidget()
         self.profiles = {}
+        draft = self.saved_draft
         for name, (title, _) in ASSISTANTS.items():
-            profile = AssistantProfile(name, self.store.data["profiles"][name], self)
+            value = copy.deepcopy(self.store.data["profiles"][name])
+            value.update(draft.get("profiles", {}).get(name, {}))
+            profile = AssistantProfile(name, value, self)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -210,12 +240,25 @@ class AiAssistantsPage(QWidget):
             self.profiles[name] = profile
             self.tabs.addTab(scroll, title)
         self.build_pool()
+        self.build_history()
         self.build_help()
         layout.addWidget(self.tabs, 1)
-        self.status = QLabel(self.store.error or "就绪。各助手的代理配置独立保存。")
+        self.status = QLabel(self.store.error or self.state_store.error or "就绪。配置、成员与操作记录保存在用户数据目录。")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.restore_session()
+        self.connect_persistence()
+        self._restoring = False
+        try:
+            backup_credentials(self.root)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report("成员备份失败：" + str(error), "backup.error")
+        self.report(f"已加载 {len(self.accounts)} 个本地成员；" +
+                    (f"已恢复 {len(self.quotas)} 个额度快照。" if self.quotas else "可启动服务查询额度。"), "app.open")
+        if self.load_warning:
+            self.report(self.load_warning, "storage.warning")
         self.update_controls()
+        QTimer.singleShot(500, self.resume_pool)
 
     def build_pool(self):
         widget = QWidget()
@@ -223,20 +266,22 @@ class AiAssistantsPage(QWidget):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         box = QGroupBox("本地账号池服务")
         form = QFormLayout(box)
-        pool = self.store.data["pool"]
+        pool = copy.deepcopy(self.store.data["pool"])
+        pool.update(self.saved_draft.get("pool", {}))
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)
         self.port.setValue(int(pool["port"]))
         self.pool_proxy = QLineEdit(pool["proxy"])
         self.pool_proxy.setPlaceholderText("http://127.0.0.1:7890；留空直接连接")
         self.strategy = QComboBox()
-        self.strategy.addItem("轮询分配", "round-robin")
-        self.strategy.addItem("优先使用首个可用账号", "fill-first")
+        for key, (label, _) in SCHEDULING.items(): self.strategy.addItem(label, key)
         self.strategy.setCurrentIndex(max(0, self.strategy.findData(pool["strategy"])))
         self.affinity = QCheckBox("同一会话保持账号，新增会话按策略分配")
         self.affinity.setChecked(bool(pool.get("session_affinity", True)))
         self.background = QCheckBox("关闭窗口后在托盘继续运行账号池")
         self.background.setChecked(bool(pool.get("background", True)))
+        self.resume = QCheckBox("启动工具箱时恢复上次运行的账号池")
+        self.resume.setChecked(bool(pool.get("resume_on_launch", True)))
         endpoint_row = QHBoxLayout()
         endpoint_row.addWidget(QLabel("端口"))
         endpoint_row.addWidget(self.port)
@@ -244,8 +289,12 @@ class AiAssistantsPage(QWidget):
         endpoint_row.addWidget(self.strategy, 1)
         form.addRow(endpoint_row)
         form.addRow("出口代理", self.pool_proxy)
+        self.strategy_hint = QLabel()
+        self.strategy_hint.setWordWrap(True); self.strategy_hint.setObjectName("muted")
+        form.addRow(self.strategy_hint)
         form.addRow(self.affinity)
         form.addRow(self.background)
+        form.addRow(self.resume)
         self.endpoint = QLineEdit()
         self.endpoint.setReadOnly(True)
         self.port.valueChanged.connect(self.update_endpoint)
@@ -262,9 +311,9 @@ class AiAssistantsPage(QWidget):
         self.start_button = QPushButton("保存并启动服务")
         self.start_button.clicked.connect(self.start_pool)
         self.stop_button = QPushButton("停止服务")
-        self.stop_button.clicked.connect(self.stop_pool)
-        self.save_pool_button = QPushButton("保存账号池配置")
-        self.save_pool_button.clicked.connect(self.save_pool)
+        self.stop_button.clicked.connect(lambda: self.stop_pool())
+        self.save_pool_button = QPushButton("保存并应用调度")
+        self.save_pool_button.clicked.connect(self.apply_schedule)
         for button in (self.install_button, self.start_button, self.stop_button, self.save_pool_button):
             controls.addWidget(button)
         controls.addStretch()
@@ -300,16 +349,32 @@ class AiAssistantsPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_login)
         login_row.addWidget(self.cancel_button)
         layout.addLayout(login_row)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["成员账号", "凭据文件", "状态", "参与分配"])
+        quota_tools = QHBoxLayout()
+        self.quota_button = QPushButton("查询所选额度"); self.quota_button.clicked.connect(lambda: self.query_quotas(False))
+        self.all_quotas_button = QPushButton("查询全部额度"); self.all_quotas_button.clicked.connect(lambda: self.query_quotas(True))
+        self.member_rule_button = QPushButton("成员优先级 / 权重"); self.member_rule_button.clicked.connect(self.edit_member_rule)
+        self.prefer_button = QPushButton("设为优先账号"); self.prefer_button.clicked.connect(self.prefer_account)
+        for button in (self.quota_button, self.all_quotas_button, self.member_rule_button, self.prefer_button):
+            quota_tools.addWidget(button)
+        quota_tools.addStretch(); layout.addLayout(quota_tools)
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["成员账号", "状态", "5 小时剩余", "周剩余", "优先级", "权重", "参与分配"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 250)
+        header.setStretchLastSection(True)
+        for column, width in ((1, 120), (2, 160), (3, 160), (4, 65), (5, 60), (6, 75)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive); self.table.setColumnWidth(column, width)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().hide()
         self.table.setMinimumHeight(130)
         self.table.itemSelectionChanged.connect(self.update_controls)
         layout.addWidget(self.table, 1)
+        self.quota_note = QLabel("额度为查询时的剩余百分比与重置时间；未返回的周期显示「未返回」。选中账号后可单独查询。")
+        self.quota_note.setWordWrap(True); self.quota_note.setObjectName("muted"); layout.addWidget(self.quota_note)
         models = QHBoxLayout()
         self.model = QComboBox()
         self.model.setEditable(True)
@@ -324,7 +389,7 @@ class AiAssistantsPage(QWidget):
         self.pool_launch_button.clicked.connect(self.launch_pool_codex)
         models.addWidget(self.pool_launch_button)
         layout.addLayout(models)
-        self.pool_note = QLabel("服务仅在本机运行。先安装引擎并启动，再添加成员；登录窗口请切换到对应成员账号。切换到其他页面后服务继续运行，退出工具箱时停止。")
+        self.pool_note = QLabel("本地成员与上次额度在停服时仍会显示。操作自动保存；退出时停止服务，下次打开可恢复上次运行状态。手动停止后不自动启动。")
         self.pool_note.setWordWrap(True)
         self.pool_note.setObjectName("muted")
         layout.addWidget(self.pool_note)
@@ -342,7 +407,156 @@ class AiAssistantsPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(widget)
+        self.pool_scroll = scroll
         self.tabs.addTab(scroll, "Codex 成员账号池")
+        self.strategy.currentIndexChanged.connect(self.schedule_changed)
+        self.schedule_changed()
+
+    def build_history(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        note = QLabel("操作及结果按时间自动保存，重启与升级后保留。这里显示最近 1000 条操作，导出包含全部已保存记录。配置和记录使用 Windows 用户加密；成员凭据变更前自动备份。")
+        note.setWordWrap(True); note.setObjectName("muted"); layout.addWidget(note)
+        buttons = QHBoxLayout()
+        export = QPushButton("导出全部操作记录 TXT"); export.clicked.connect(self.export_history)
+        directory = QPushButton("打开数据与备份目录"); directory.clicked.connect(self.open_data_directory)
+        buttons.addWidget(export); buttons.addWidget(directory); buttons.addStretch(); layout.addLayout(buttons)
+        self.history_view = QPlainTextEdit(); self.history_view.setReadOnly(True)
+        self.history_view.setMaximumBlockCount(1500)
+        layout.addWidget(self.history_view, 1)
+        self.tabs.addTab(widget, "操作记录")
+
+    def restore_session(self):
+        state = self.state_store.data
+        models = [str(value) for value in state.get("models", [])]
+        current = self.model.currentText()
+        self.model.addItems(models)
+        self.model.setCurrentText(current)
+        try:
+            records = self.history.records()
+        except OSError:
+            records = []
+            self.status.setText("操作记录读取异常，请检查用户数据目录权限。")
+        self.history_view.setPlainText("\n".join(history_line(record) for record in records))
+        self.log.setPlainText("\n".join(history_line(record) for record in records[-100:]))
+        rows, errors = local_members(self.root)
+        self.set_accounts(rows, persist=False)
+        ui = state.get("ui", {})
+        name = ui.get("member", "")
+        for index, row in enumerate(rows):
+            if row.get("name") == name:
+                self.table.selectRow(index)
+                break
+        tab = max(0, min(int(ui.get("tab", 4 if rows else 0)), self.tabs.count() - 1))
+        self.tabs.setCurrentIndex(tab)
+        for column, width in enumerate(ui.get("columns", [])[:self.table.columnCount()]):
+            if isinstance(width, int) and 40 <= width <= 1200:
+                self.table.setColumnWidth(column, width)
+        QTimer.singleShot(0, lambda: self.pool_scroll.verticalScrollBar().setValue(int(ui.get("pool_scroll", 0))))
+        if errors:
+            self.report(f"{errors} 个本地凭据文件读取异常，原文件已保留。", "storage.warning")
+
+    def connect_persistence(self):
+        for name, profile in self.profiles.items():
+            label = ASSISTANTS[name][0] + " 配置"
+            for field in (profile.proxy, profile.no_proxy, profile.program, profile.cwd):
+                field.textChanged.connect(lambda _value, label=label: self.queue_save(label))
+            profile.args.textChanged.connect(lambda label=label: self.queue_save(label))
+            profile.mode.currentIndexChanged.connect(lambda _value, label=label: self.queue_save(label))
+            profile.kind.currentIndexChanged.connect(lambda _value, label=label: self.queue_save(label))
+        self.pool_proxy.textChanged.connect(lambda: self.queue_save("账号池配置"))
+        self.port.valueChanged.connect(lambda: self.queue_save("账号池配置"))
+        self.strategy.currentIndexChanged.connect(lambda: self.queue_save("调度选择"))
+        for field in (self.affinity, self.background, self.resume):
+            field.toggled.connect(lambda: self.queue_save("账号池配置"))
+        self.model.currentTextChanged.connect(lambda: self.queue_save("模型选择"))
+        self.tabs.currentChanged.connect(lambda: self.queue_save("助手标签"))
+        self.table.itemSelectionChanged.connect(lambda: self.queue_save("所选成员"))
+        self.table.horizontalHeader().sectionResized.connect(lambda: self.queue_save())
+        self.pool_scroll.verticalScrollBar().valueChanged.connect(lambda: self.queue_save())
+
+    def queue_save(self, label=""):
+        if self._restoring or self.stopping:
+            return
+        if label:
+            self._pending_changes.add(label)
+        self.save_timer.start()
+
+    def persist_state(self):
+        data = copy.deepcopy(self.state_store.data)
+        selected = self.selected_account()
+        data.update(quotas=self.quotas, service_wanted=self.service_wanted,
+                    settings_fingerprint=settings_fingerprint(self.store.data),
+                    models=[self.model.itemText(i) for i in range(self.model.count())],
+                    ui={"tab": self.tabs.currentIndex(), "member": selected.get("name", "") if selected else "",
+                        "pool_scroll": self.pool_scroll.verticalScrollBar().value(),
+                        "columns": [self.table.columnWidth(i) for i in range(self.table.columnCount())]},
+                    draft={"profiles": {name: profile.raw_value() for name, profile in self.profiles.items()},
+                           "pool": {"port": self.port.value(), "proxy": self.pool_proxy.text(),
+                                    "strategy": self.strategy.currentData(), "session_affinity": self.affinity.isChecked(),
+                                    "background": self.background.isChecked(), "resume_on_launch": self.resume.isChecked(),
+                                    "model": self.model.currentText()}})
+        try:
+            self.state_store.save(data)
+            return True
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report("操作状态保存失败：" + str(error), "storage.error")
+            return False
+
+    def save_session(self):
+        self.save_timer.stop()
+        saved = False
+        data = copy.deepcopy(self.store.data)
+        for name, profile in self.profiles.items():
+            try:
+                data["profiles"][name] = profile.value()
+            except ValueError:
+                pass  # Preserve incomplete edits in the encrypted draft, without applying them.
+        try:
+            data["pool"] = self.pool_value()
+        except ValueError:
+            pass
+        try:
+            if data != self.store.data or not self.store.path.exists() or self.store.error:
+                self.store.save(data)
+            saved = self.persist_state()
+            if saved and self._pending_changes:
+                details = []
+                for label in sorted(self._pending_changes):
+                    if label == "调度选择":
+                        label += "：" + self.strategy.currentText()
+                    elif label == "模型选择":
+                        label += "：" + (self.model.currentText() or "未选择")
+                    elif label == "助手标签":
+                        label += "：" + self.tabs.tabText(self.tabs.currentIndex())
+                    elif label == "所选成员":
+                        row = self.selected_account()
+                        label += "：" + str(row.get("email") or row["name"]) if row else "：未选择"
+                    details.append(label)
+                self.report("已记住：" + "；".join(details) + "。", "settings.autosave")
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report("配置保存失败：" + str(error), "storage.error")
+        self._pending_changes.clear()
+        return saved
+
+    def resume_pool(self):
+        if not self.stopping and self.service_wanted and self.resume.isChecked() and not self.is_running:
+            self.report("正在恢复上次运行的账号池。", "service.resume")
+            self.start_pool()
+
+    def open_data_directory(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.root.resolve())))
+        self.report("已打开数据与备份目录。", "data.open")
+
+    def export_history(self):
+        path, _ = QFileDialog.getSaveFileName(self, "导出操作记录", "Omini-操作记录.txt", "文本文件 (*.txt)")
+        if path:
+            try:
+                Path(path).write_text("\n".join(history_line(record) for record in self.history.records(limit=None, include_engine=True)) + "\n", encoding="utf-8-sig")
+                self.report("操作记录已导出。", "history.export")
+            except OSError as error:
+                self.report("记录导出失败：" + str(error), "history.error")
 
     def build_help(self):
         help_view = QTextBrowser()
@@ -355,7 +569,12 @@ class AiAssistantsPage(QWidget):
         <h3>Codex 多成员轮询</h3>
         <p>在「Codex 成员账号池」安装引擎、设置出口代理并启动，逐个点击「登录并添加成员」，
         或导入 Codex auth.json / CLIProxyAPI 的 Codex JSON。重复导入同一账号更新它的凭据。</p>
-        <p>「轮询分配」配合会话保持，让新会话轮流使用可用成员；取消会话保持则按请求分配。
+        <p>「轮询分配」可保持同一会话；「雨露均沾」关闭会话保持，所有可用成员逐请求均分；
+        「优先账号」先用高优先级成员，冷却时切换；「加权轮询」按成员权重分配。
+        点击「成员优先级 / 权重」调整，或选中后「设为优先账号」。运行中点击「保存并应用调度」立即生效。
+        优先级仅在优先模式使用，其余模式的成员按同级参与。均分请求数量不代表每个账号消耗相同额度。</p>
+        <p>「查询所选额度 / 查询全部额度」读取账号的 5 小时及周限额，显示剩余百分比、重置时间和查询时间。
+        未返回的周期显示「未返回」；查询失败保留旧快照并标记。查询只读取用量，不发起模型生成。
         账号失效或额度等待由引擎处理，停用成员会退出分配。移出只删除本地池中的凭据副本。</p>
         <p>在 Codex 标签选择 CLI 或桌面版、设置程序和工作目录。读取模型后点击「通过账号池启动 Codex」。
         此入口使用独立的 codex-pool/ 配置目录和本地 Responses 接口；账号池会话存放在该目录，
@@ -364,6 +583,12 @@ class AiAssistantsPage(QWidget):
         <p>配置与本地密钥使用 Windows 用户加密存入 %APPDATA%/Omini工具箱/ai-assistants/。
         引擎按其原生格式在 auths/ 保存 OAuth 凭据；运行配置在服务停止后清理。个人数据留在用户目录。</p>
         <p>账号池服务随工具箱运行，关闭到托盘时继续，完全退出时停止。已经打开的助手窗口由你自行退出。</p>
+        <p>本地成员在服务未启动时仍可查看；额度保留上次查询快照，重启后会标记「上次」。
+        配置编辑自动保存，所选成员、模型、标签和表格宽度会恢复。
+        勾选恢复选项后，下次打开工具箱会恢复上次正在运行的服务；手动停止后保持停止。</p>
+        <p>「操作记录」可查看与导出启动、停止、代理配置、调度、成员变更、额度查询和助手启动的记录。
+        history/ 保存加密记录，settings.json.bak 与 state.json.bak 保存上次有效配置；
+        backups/credentials/ 保存 Windows 用户加密的成员备份。卸载与升级保留用户数据目录。</p>
         <h3>项目与文档</h3>
         <p>账号池引擎：<a href="{ENGINE_REPO}">CLIProxyAPI v{ENGINE_VERSION}</a>（MIT，固定版本并校验 SHA-256）<br>
         <a href="https://help.router-for.me/management/apiv8">CLIProxyAPI v8 管理接口</a><br>
@@ -384,11 +609,21 @@ class AiAssistantsPage(QWidget):
     def update_endpoint(self):
         self.endpoint.setText(f"http://127.0.0.1:{self.port.value()}/v1")
 
-    def report(self, text):
+    def report(self, text, event="action"):
         pool = self.store.data["pool"]
-        text = redact(str(text), [pool["api_key"], pool["management_key"], pool.get("proxy", "")])
+        secrets = [pool["api_key"], pool["management_key"]]
+        secrets += [value.get("proxy", "") for value in self.store.data["profiles"].values()]
+        text = redact(str(text), secrets)
         self.status.setText(text)
-        self.log.appendPlainText(text)
+        try:
+            record = self.history.append(text, event)
+            line = history_line(record)
+            if event != "engine":
+                self.history_view.appendPlainText(line)
+        except (OSError, ValueError, RuntimeError):
+            line = text
+            self.status.setText(text + "（操作记录写入失败，请检查数据目录。）")
+        self.log.appendPlainText(line)
 
     def run_action(self, action, success=None, failure=None, *, quiet=False):
         if self.worker is not None and self.worker.isRunning():
@@ -430,6 +665,8 @@ class AiAssistantsPage(QWidget):
             data["profiles"][name] = profile
             self.store.save(data)
             self.profiles[name].status.setText("配置已保存，下次从本页启动时生效。")
+            self.persist_state()
+            self.report(ASSISTANTS[name][0] + "：代理与启动配置已保存。", "profile.save")
             return profile
         except (ValueError, OSError, RuntimeError) as error:
             self.report(str(error))
@@ -438,9 +675,11 @@ class AiAssistantsPage(QWidget):
     def test_profile(self, name):
         profile = self.save_profile(name)
         if profile:
+            def success(value):
+                self.profiles[name].status.setText(value["message"])
+                self.report(ASSISTANTS[name][0] + " 网络测试：" + value["message"], "profile.test")
             self.run_action(lambda _: test_connection(name, profile),
-                            lambda value: self.profiles[name].status.setText(value["message"]),
-                            lambda message: self.profiles[name].status.setText(message))
+                            success, lambda message: self.report(ASSISTANTS[name][0] + " 网络测试：" + message, "profile.test"))
 
     def launch_profile(self, name):
         profile = self.save_profile(name)
@@ -448,6 +687,7 @@ class AiAssistantsPage(QWidget):
             try:
                 pid = launch_assistant(name, profile, root=self.root)
                 self.profiles[name].status.setText(f"已发起启动（PID {pid}）。已有窗口请先正常退出后再启动。")
+                self.report(f"已启动 {ASSISTANTS[name][0]}（PID {pid}）。", "profile.launch")
             except (ValueError, OSError) as error:
                 self.report(str(error))
 
@@ -456,6 +696,7 @@ class AiAssistantsPage(QWidget):
         pool.update(port=self.port.value(), proxy=validate_proxy(self.pool_proxy.text(), allow_empty=True),
                     strategy=self.strategy.currentData(), session_affinity=self.affinity.isChecked(),
                     background=self.background.isChecked(),
+                    resume_on_launch=self.resume.isChecked(),
                     model=self.model.currentText().strip())
         pool_config(self.root, pool)
         return pool
@@ -466,11 +707,91 @@ class AiAssistantsPage(QWidget):
             data = copy.deepcopy(self.store.data)
             data["pool"] = pool
             self.store.save(data)
-            self.report("账号池配置已保存。")
+            self.persist_state()
+            self.report("账号池配置已保存。" + ("调度变更请点击「保存并应用调度」。" if self.ready else ""))
             return pool
         except (ValueError, OSError, RuntimeError) as error:
             self.report(str(error))
             return None
+
+    def schedule_changed(self):
+        strategy = self.strategy.currentData()
+        if strategy == "balanced":
+            if not getattr(self, "_balanced_mode", False):
+                self._affinity_before_balanced = self.affinity.isChecked()
+            self.affinity.setChecked(False)
+        elif getattr(self, "_balanced_mode", False):
+            self.affinity.setChecked(getattr(self, "_affinity_before_balanced", True))
+        self._balanced_mode = strategy == "balanced"
+        self.strategy_hint.setText(SCHEDULING[strategy][1] + " 优先级仅在优先模式使用。")
+        self.update_controls()
+
+    def apply_schedule(self):
+        if self.worker is not None: return
+        pool = self.save_pool()
+        if pool is None: return
+        if not self.is_running:
+            self.report("账号池调度已保存，下次启动服务生效。")
+            return
+        try:
+            client = self.client()
+            def action(worker):
+                value = remember_member_rules(pool, client.accounts())
+                rows = client.apply_scheduling(value, cancelled=worker.isInterruptionRequested)
+                return value, rows
+            def success(result):
+                value, rows = result
+                self.active_pool = copy.deepcopy(value)
+                data = copy.deepcopy(self.store.data); data["pool"] = value; self.store.save(data)
+                self.set_accounts(rows)
+                self.report("调度已生效：" + SCHEDULING[value["strategy"]][0] + "。已建立的会话绑定按引擎规则继续处理。")
+            self.run_action(action, success)
+        except ValueError as error:
+            self.report(str(error))
+
+    def edit_member_rule(self):
+        row = self.selected_account()
+        if not row: return
+        rule = member_rule(self.store.data["pool"], row)
+        dialog = QDialog(self); dialog.setWindowTitle("成员调度设置")
+        layout = QFormLayout(dialog)
+        account = QLabel(str(row.get("email") or row["name"])); account.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addRow("成员", account)
+        priority = QSpinBox(); priority.setRange(-1000000, 1000000); priority.setValue(rule["priority"])
+        weight = QSpinBox(); weight.setRange(1, 1000000); weight.setValue(rule["weight"])
+        layout.addRow("优先级（数值大先用）", priority); layout.addRow("权重（比例）", weight)
+        note = QLabel("优先级用于优先账号模式；权重用于加权轮询。保存后立即应用到运行中的账号池。")
+        note.setWordWrap(True); layout.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.save_member_rule(row, {"priority": priority.value(), "weight": weight.value()})
+
+    def save_member_rule(self, row, rule):
+        data = copy.deepcopy(self.store.data)
+        data["pool"].setdefault("member_rules", {})[row["name"]] = rule
+        member_rule(data["pool"], row)
+        try:
+            self.store.save(data)
+            self.report(f"已保存成员 {row.get('email') or row['name']} 的优先级 {rule['priority']}、权重 {rule['weight']}。", "member.rule")
+            self.apply_schedule()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.report(str(error))
+
+    def prefer_account(self):
+        row = self.selected_account()
+        if not row: return
+        data = copy.deepcopy(self.store.data)
+        data["pool"] = remember_member_rules(data["pool"], self.accounts)
+        for name, rule in data["pool"]["member_rules"].items():
+            rule["priority"] = 100 if name == row["name"] else 0
+        try:
+            self.store.save(data)
+            self.report("已设为优先账号：" + str(row.get("email") or row["name"]) + "。", "member.prefer")
+            self.strategy.setCurrentIndex(self.strategy.findData("fill-first"))
+            self.apply_schedule()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.report(str(error))
 
     def copy_key(self):
         # Persist the generated key before allowing clients to copy it.
@@ -511,6 +832,7 @@ class AiAssistantsPage(QWidget):
                 raise ValueError("另一个工具箱窗口正在运行此账号池。")
             available_port(pool["port"])
             (self.root / "auths").mkdir(exist_ok=True)
+            backup_credentials(self.root)
             self.runtime = tempfile.TemporaryDirectory(prefix="omini-codex-pool-")
             config = Path(self.runtime.name) / "config.yaml"
             atomic_json(config, pool_config(self.root, pool))
@@ -524,12 +846,15 @@ class AiAssistantsPage(QWidget):
             self.process.setArguments(["--config", str(config), "--local-model"])
             self.process.setWorkingDirectory(self.runtime.name)
             self.active_pool = copy.deepcopy(pool)
+            self._stop_requested = False
             self.ready = False
             self.started_at = time.monotonic()
+            self.service_wanted = True
+            self.persist_state()
             self.process.start()
             self.start_timer.start()
-            self.report("正在启动本地账号池…")
-        except (ValueError, OSError) as error:
+            self.report("正在启动本地账号池…", "service.start")
+        except (ValueError, OSError, RuntimeError) as error:
             self.cleanup_runtime()
             self.report(str(error))
         self.update_controls()
@@ -539,18 +864,25 @@ class AiAssistantsPage(QWidget):
             self.start_timer.stop()
             return
         if time.monotonic() - self.started_at > 25:
-            self.stop_pool()
+            self.stop_pool(remember=False)
             self.report("服务启动超时，请检查端口和引擎日志后重试。")
             return
         client = PoolClient(self.active_pool)
-        def success(rows):
+        pool = copy.deepcopy(self.active_pool)
+        def action(worker):
+            value = remember_member_rules(pool, client.accounts())
+            return value, client.apply_scheduling(value, cancelled=worker.isInterruptionRequested)
+        def success(result):
             if self.is_running:
+                value, rows = result
+                self.active_pool = copy.deepcopy(value)
+                data = copy.deepcopy(self.store.data); data["pool"] = value; self.store.save(data)
                 self.ready = True
                 self.start_timer.stop()
                 self.set_accounts(rows)
                 self.report("本地账号池已就绪，可逐个添加成员。")
                 self.update_controls()
-        self.run_action(lambda _: client.accounts(), success, lambda _: None, quiet=True)
+        self.run_action(action, success, lambda _: None, quiet=True)
 
     def client(self):
         if not self.ready or not self.is_running:
@@ -558,29 +890,107 @@ class AiAssistantsPage(QWidget):
         return PoolClient(self.active_pool)
 
     def refresh_accounts(self):
+        if not self.ready:
+            rows, errors = local_members(self.root)
+            self.set_accounts(rows)
+            self.report(f"已读取 {len(rows)} 个本地成员。" + (f"{errors} 个凭据文件需检查。" if errors else "启动服务后可查询实时状态与额度。"), "member.refresh")
+            return
         try:
             client = self.client()
-            self.run_action(lambda _: client.accounts(), self.set_accounts)
+            def success(rows):
+                self.set_accounts(rows)
+                self.report(f"已刷新 {len(rows)} 个成员。", "member.refresh")
+            self.run_action(lambda _: client.accounts(), success)
         except ValueError as error:
             self.report(str(error))
 
-    def set_accounts(self, rows):
+    def set_accounts(self, rows, *, persist=True):
         selected = self.selected_account()
         selected_name = selected.get("name") if selected else None
         self.accounts = rows
+        # Keep the user's preference even when non-priority modes neutralize engine priorities.
+        data = copy.deepcopy(self.store.data)
+        value = remember_member_rules(data["pool"], rows)
+        if value != data["pool"]:
+            data["pool"] = value
+            try: self.store.save(data)
+            except (OSError, ValueError, RuntimeError) as error: self.report(str(error))
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             status = row.get("status", "")
             status = {"ready": "就绪", "active": "可用", "error": "需检查", "disabled": "已停用"}.get(status, status)
             if row.get("unavailable"):
                 status = "等待恢复 / 额度冷却"
-            values = (row.get("email") or row.get("label") or row.get("id", "—"), row.get("name", ""),
-                      status, "已停用" if row.get("disabled") else "已启用")
+            rule = member_rule(self.store.data["pool"], row)
+            snapshot = self.quotas.get(row.get("name"))
+            five, five_tip = quota_cell(snapshot, "five_hour")
+            weekly, weekly_tip = quota_cell(snapshot, "weekly")
+            values = (row.get("email") or row.get("label") or row.get("id", "—"), status, five, weekly,
+                      rule["priority"], rule["weight"], "已停用" if row.get("disabled") else "已启用")
             for col, value in enumerate(values):
-                self.table.setItem(index, col, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value)); self.table.setItem(index, col, item)
+                item.setToolTip(five_tip if col == 2 else weekly_tip if col == 3 else
+                                (str(value) + "\n凭据文件：" + row.get("name", "")))
+            self.table.setRowHeight(index, 54)
             if row.get("name") == selected_name:
                 self.table.selectRow(index)
+        self.table.blockSignals(False)
+        # An empty live response or stopped service must never erase saved quotas.
+        if persist and not self._restoring:
+            try:
+                backup_credentials(self.root)
+            except (OSError, ValueError, RuntimeError) as error:
+                self.report("成员备份失败：" + str(error), "backup.error")
+            self.persist_state()
         self.update_controls()
+
+    def query_quotas(self, all_accounts=False):
+        if self.worker is not None: return
+        try:
+            client = self.client()
+            selected = self.selected_account()
+            rows = list(self.accounts) if all_accounts else ([selected] if selected else [])
+            if not rows:
+                self.report("请先添加成员账号，并选择要查询的成员。")
+                return
+            self.report(f"正在查询 {len(rows)} 个成员的额度" +
+                        ("：" + str(rows[0].get("email") or rows[0]["name"]) if len(rows) == 1 else "") + "…", "quota.start")
+            def action(worker):
+                results = {}
+                with ThreadPoolExecutor(max_workers=min(3, len(rows)), thread_name_prefix="codex-quota") as executor:
+                    pending = {executor.submit(client.quota, row): row["name"] for row in rows}
+                    for future in as_completed(pending):
+                        if worker.isInterruptionRequested():
+                            for item in pending: item.cancel()
+                            break
+                        name = pending[future]
+                        try:
+                            results[name] = future.result()
+                        except (ValueError, OSError) as error:
+                            results[name] = {"error": str(error), "checked_at": int(time.time())}
+                        worker.progress.emit(f"额度查询 {len(results)}/{len(rows)}")
+                return results
+            def success(results):
+                updated = 0
+                for name, snapshot in results.items():
+                    if snapshot.get("error"):
+                        old = copy.deepcopy(self.quotas.get(name, snapshot))
+                        old["error"] = snapshot["error"]
+                        self.quotas[name] = old
+                    else:
+                        updated += 1; self.quotas[name] = snapshot
+                    row = next((row for row in rows if row["name"] == name), {"name": name})
+                    details = ("查询失败：" + snapshot["error"] if snapshot.get("error") else
+                               "5 小时 " + quota_cell(snapshot, "five_hour")[0].splitlines()[0] +
+                               "；周 " + quota_cell(snapshot, "weekly")[0].splitlines()[0])
+                    self.report(str(row.get("email") or name) + "：" + details, "quota.result")
+                self.set_accounts(self.accounts)
+                self.quota_note.setText(f"本次已更新 {updated}/{len(results)} 个账号。额度为查询时的快照；悬停可查看查询时间与错误原因。")
+                self.report(f"额度查询完成：成功 {updated}，失败 {len(results) - updated}。")
+            self.run_action(action, success)
+        except ValueError as error:
+            self.report(str(error))
 
     def selected_account(self):
         index = self.table.currentRow()
@@ -660,6 +1070,7 @@ class AiAssistantsPage(QWidget):
             return
         try:
             client = self.client()
+            backup_credentials(self.root)
             def action(worker):
                 imported, errors = 0, []
                 for path in paths:
@@ -684,9 +1095,13 @@ class AiAssistantsPage(QWidget):
         if row:
             client = self.client()
             def action(_):
+                backup_credentials(self.root)
                 client.set_disabled(row["name"], not row.get("disabled", False))
                 return client.accounts()
-            self.run_action(action, self.set_accounts)
+            def success(rows):
+                self.set_accounts(rows)
+                self.report(("已启用成员：" if row.get("disabled") else "已停用成员：") + str(row.get("email") or row["name"]) + "。", "member.toggle")
+            self.run_action(action, success)
 
     def remove_account(self):
         row = self.selected_account()
@@ -697,9 +1112,13 @@ class AiAssistantsPage(QWidget):
             return
         client = self.client()
         def action(_):
+            backup_credentials(self.root)
             client.remove(row["name"])
             return client.accounts()
-        self.run_action(action, self.set_accounts)
+        def success(rows):
+            self.set_accounts(rows)
+            self.report("已移出成员：" + str(row.get("email") or row["name"]) + "；移出前已保存加密备份。", "member.remove")
+        self.run_action(action, success)
 
     def read_models(self):
         try:
@@ -708,8 +1127,9 @@ class AiAssistantsPage(QWidget):
                 previous = self.model.currentText()
                 self.model.clear()
                 self.model.addItems(models)
-                if previous in models:
+                if previous:
                     self.model.setCurrentText(previous)
+                self.persist_state()
                 self.report(f"已读取 {len(models)} 个可用模型。" if models else "暂无模型，请先添加并启用成员账号。")
             self.run_action(lambda _: client.models(), success)
         except ValueError as error:
@@ -731,25 +1151,34 @@ class AiAssistantsPage(QWidget):
             self.report(str(error))
 
     def update_controls(self):
-        busy = self.worker is not None and self.worker.isRunning()
+        busy = self.worker is not None
         running = self.is_running
         selected = self.selected_account() is not None
-        for field in (self.port, self.pool_proxy, self.strategy, self.affinity):
+        for field in (self.port, self.pool_proxy):
             field.setEnabled(not running and not busy and not self.stopping)
+        self.strategy.setEnabled(not busy and not self.stopping and (not running or self.ready))
+        self.affinity.setEnabled(self.strategy.currentData() != "balanced" and not busy and not self.stopping
+                                 and (not running or self.ready))
         self.install_button.setEnabled(not running and not busy and not self.stopping)
         self.start_button.setEnabled(not running and not busy and not self.stopping)
         self.save_pool_button.setEnabled(not busy and not self.stopping)
-        self.stop_button.setEnabled(running and not busy)
-        for button in (self.import_button, self.refresh_button, self.models_button, self.pool_launch_button):
+        self.stop_button.setEnabled((running or self.service_wanted) and not busy and not self.stopping)
+        for button in (self.import_button, self.models_button, self.pool_launch_button):
             button.setEnabled(self.ready and not busy and not self.stopping)
+        self.refresh_button.setEnabled(not busy and not self.stopping)
         self.login_button.setEnabled(self.ready and not busy and not self.login_state and not self.stopping)
         self.cancel_button.setEnabled(bool(self.login_state) and not busy)
         self.reopen_login.setEnabled(bool(self.login_state))
         self.toggle_button.setEnabled(self.ready and selected and not busy)
         self.remove_button.setEnabled(self.ready and selected and not busy)
+        self.quota_button.setEnabled(self.ready and selected and not busy and not self.stopping)
+        self.all_quotas_button.setEnabled(self.ready and bool(self.accounts) and not busy and not self.stopping)
+        self.member_rule_button.setEnabled(selected and not busy and not self.stopping)
+        self.prefer_button.setEnabled(selected and not busy and not self.stopping
+                                     and not self.selected_account().get("disabled", False))
         path = engine_path(self.root)
         self.install_button.setText("重新安装引擎" if path else "安装代理引擎")
-        self.engine_status.setText((f"CLIProxyAPI v{ENGINE_VERSION} · " + ("运行中" if self.ready else "正在启动" if running else "已安装"))
+        self.engine_status.setText((f"CLIProxyAPI v{ENGINE_VERSION} · " + ("运行中" if self.ready else "正在启动" if running else "服务未启动 · 本地成员已保留"))
                                    if path else f"尚未安装 · CLIProxyAPI v{ENGINE_VERSION} · 官方 GitHub，SHA-256 校验")
 
     def read_output(self):
@@ -757,7 +1186,13 @@ class AiAssistantsPage(QWidget):
         pool = self.active_pool or self.store.data["pool"]
         for line in output.splitlines():
             # HTTP request logs are disabled. Retain short startup diagnostics only.
-            self.log.appendPlainText(redact(line[:1000], [pool["api_key"], pool["management_key"]]))
+            clean = redact(line[:1000], [pool["api_key"], pool["management_key"]])
+            if re.search(r"gin_logger\.go:\d+\]\s+2\d\d\b", clean):
+                continue  # The corresponding user action is recorded separately.
+            try:
+                self.log.appendPlainText(history_line(self.history.append(clean, "engine")))
+            except (OSError, ValueError, RuntimeError):
+                self.log.appendPlainText(clean)
 
     def process_error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
@@ -772,8 +1207,10 @@ class AiAssistantsPage(QWidget):
         self.ready = False
         self.clear_login()
         self.cleanup_runtime()
+        self.set_accounts(local_members(self.root)[0])
         if not self.stopping:
-            self.report(f"账号池服务已停止（退出码 {code}）。")
+            self.report("账号池服务已停止，本地成员与记录已保留。" if self._stop_requested else
+                        f"账号池服务已退出（退出码 {code}）；本地成员与记录已保留。", "service.exit")
         self.update_controls()
 
     def cleanup_runtime(self):
@@ -785,7 +1222,12 @@ class AiAssistantsPage(QWidget):
             self.lock = None
         self.active_pool = None
 
-    def stop_pool(self):
+    def stop_pool(self, *, remember=True):
+        self._stop_requested = True
+        if remember:
+            self.service_wanted = False
+            self.persist_state()
+            self.report("已手动停止账号池；下次打开工具箱保持停止。", "service.stop")
         self.start_timer.stop()
         self.ready = False
         self.clear_login()
@@ -795,10 +1237,16 @@ class AiAssistantsPage(QWidget):
                 self.process.kill()
                 self.process.waitForFinished(1000)
         self.cleanup_runtime()
+        self.set_accounts(local_members(self.root)[0])
         self.update_controls()
 
     def stop(self):
+        if self.stopping:
+            return
+        saved = self.save_session()
+        self.report("退出工具箱，已保存操作与运行状态。" if saved else
+                    "退出工具箱，部分状态保存失败；请检查操作记录与数据目录。", "app.close")
         self.stopping = True
         if self.worker is not None:
             self.worker.requestInterruption()
-        self.stop_pool()
+        self.stop_pool(remember=False)

@@ -1244,6 +1244,9 @@ class MainWindow(QMainWindow):
         self.resize(1280, 860)
         self.setMinimumSize(980, 680)
         self._build_ui()
+        previous_page = self.settings.get("last_page", 0)
+        if isinstance(previous_page, int) and 0 <= previous_page < self.nav.count():
+            self.nav.setCurrentRow(previous_page)
         self.apply_theme()
         self.quitting = False
         self.tray = QSystemTrayIcon(QIcon(str(resource_path("assets/omini_icon.ico"))), self)
@@ -1350,6 +1353,10 @@ class MainWindow(QMainWindow):
 
     def change_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
+        self.settings["last_page"] = index
+        save_json(SETTINGS_FILE, self.settings)
+        if hasattr(self, "ai_assistants_page"):
+            self.ai_assistants_page.report("打开工具：" + self.nav.item(index).text().strip(), "navigation")
         if hasattr(self, "omini_api_page") and self.stack.currentWidget() is self.omini_api_page:
             self.omini_api_page.ensure_started()
 

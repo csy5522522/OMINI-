@@ -27,7 +27,12 @@ def uninstall_entry():
 def run(command, environment=None):
     result = subprocess.run(command, env=environment, timeout=180, creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode != 0:
-        raise RuntimeError(f"Verification command exited with {result.returncode}: {command[0]}")
+        detail = ""
+        if environment and environment.get("OMINI_SELF_TEST_LOG"):
+            path = Path(environment["OMINI_SELF_TEST_LOG"])
+            if path.exists():
+                detail = "\n" + path.read_text(encoding="utf-8")[-3500:]
+        raise RuntimeError(f"Verification command exited with {result.returncode}: {command[0]}" + detail)
 
 
 def main():
@@ -107,6 +112,27 @@ def main():
             api_report = json.loads((temp_root / "api-check.json").read_text(encoding="utf-8"))
             assert api_report.get("ok") is True and len(api_report.get("tabs", [])) == 7
             report["installed_api_smoke"] = True
+            ai_environment = api_environment.copy()
+            ai_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "ai-check.json")
+            ai_environment["OMINI_AI_CAPTURE_DIR"] = str(root / "verification" / ("installed-ai-" + version))
+            run([str(app), "--self-test-ai-assistants"], ai_environment)
+            ai_report = json.loads((temp_root / "ai-check.json").read_text(encoding="utf-8"))
+            assert ai_report.get("ok") and ai_report.get("quota_columns_and_batch_query") and ai_report.get("live_balanced_scheduling")
+            assert all(ai_report.get(key) for key in ("offline_members_after_restart", "persistent_quotas_and_history",
+                                                      "resume_running_service", "manual_stop_preserved"))
+            report["installed_ai_quota_scheduling_smoke"] = True
+            report["installed_ai_restart_history_smoke"] = True
+            # Real encrypted user data lives outside the installation directory.
+            sys.path.insert(0, str(root))
+            from ai_assistants import AssistantStore, atomic_json
+            from assistant_data import AssistantState, OperationHistory
+            ai_data = notes_root / "ai-assistants"
+            ai_store = AssistantStore(ai_data); ai_store.save(ai_store.data)
+            atomic_json(ai_data / "auths/codex-sentinel.json", {"type": "codex", "email": "fixture@example.com",
+                "access_token": "verification-only-access", "refresh_token": "verification-only-refresh"})
+            state = AssistantState(ai_data); state.save({**state.data, "ui": {"tab": 4}, "quotas": {}})
+            OperationHistory(ai_data).append("upgrade-and-uninstall-action-sentinel", "fixture.action")
+            ai_original = {path.relative_to(ai_data): path.read_bytes() for path in ai_data.rglob('*') if path.is_file()}
             obsolete = ["tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
                         "_internal/PySide6/Qt6WebEngineCore.dll", "_internal/PySide6/QtWebEngineCore.pyd",
                         "_internal/PySide6/QtWebEngineProcess.exe", "_internal/PySide6/resources/icudtl.dat",
@@ -123,6 +149,8 @@ def main():
             assert report["upgrade_removes_obsolete_runtimes"]
             assert user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["upgrade_preserves_user_files"] = True
+            report["upgrade_preserves_ai_members_state_history"] = all((ai_data / path).read_bytes() == content
+                                                                       for path, content in ai_original.items())
             uninstaller = target / "unins000.exe"
             assert uninstaller.resolve().parent == target.resolve()
             run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
@@ -136,6 +164,8 @@ def main():
             report["extra_files_preserved"] = user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["txt_notes_and_legacy_cache_preserved"] = (note_file.read_bytes() == note_original
                 and legacy_cache.read_text(encoding='utf-8') == 'legacy-encrypted-cache-sentinel')
+            report["uninstall_preserves_ai_members_state_history"] = all((ai_data / path).read_bytes() == content
+                                                                         for path, content in ai_original.items())
             (root / "verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             assert all(value is True for key, value in report.items() if key != "installer"), report
         finally:

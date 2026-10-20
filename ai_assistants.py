@@ -23,7 +23,8 @@ from urllib.parse import urlsplit
 
 import requests
 
-from campus_network import protect_password, unprotect_password
+from assistant_data import read_protected, write_protected
+from codex_quota import USAGE_URL, parse_codex_quota
 
 
 ENGINE_VERSION = "8.0.35"
@@ -39,6 +40,12 @@ ASSISTANTS = {
     "claude": ("Claude Code", "https://api.anthropic.com/"),
 }
 PROXY_KEYS = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+SCHEDULING = {
+    "round-robin": ("轮询分配（按会话）", "新会话轮流分配；可开启同一会话保持账号。"),
+    "balanced": ("雨露均沾（逐请求均分）", "所有可用成员逐请求轮询，不保持会话；均分请求数量，单次请求消耗的额度可能不同。"),
+    "fill-first": ("优先账号（按优先级用满）", "先使用优先级较高的成员，额度冷却或不可用时切换；同级优先首个可用账号。"),
+    "weighted-round-robin": ("加权轮询（按权重分配）", "按成员权重分配，例如 2:1 约分配两倍请求；开启会话保持时按新会话分配。"),
+}
 
 
 def atomic_json(path: Path, value) -> None:
@@ -61,7 +68,8 @@ def default_settings() -> dict:
         },
         "pool": {"port": 8317, "proxy": "http://127.0.0.1:7890",
                  "strategy": "round-robin", "session_affinity": True,
-                 "background": True,
+                 "member_rules": {},
+                 "background": True, "resume_on_launch": True,
                  "api_key": "omini-" + secrets.token_urlsafe(32),
                  "management_key": secrets.token_urlsafe(40), "model": ""},
     }
@@ -75,19 +83,23 @@ class AssistantStore:
         self.path = self.root / "settings.json"
         self.data = default_settings()
         self.error = ""
-        if self.path.exists():
-            try:
-                envelope = json.loads(self.path.read_text(encoding="utf-8"))
-                saved = json.loads(unprotect_password(envelope["protected"]))
-                for name in ASSISTANTS:
-                    self.data["profiles"][name].update(saved.get("profiles", {}).get(name, {}))
-                self.data["pool"].update(saved.get("pool", {}))
-            except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
-                self.error = "AI 助手配置读取失败，请重新设置后保存。"
+        self.writable = True
+        try:
+            saved, self.error = read_protected(self.path, {},
+                lambda value: isinstance(value.get("profiles", {}), dict)
+                and isinstance(value.get("pool", {}), dict)
+                and all(isinstance(item, dict) for item in value.get("profiles", {}).values()))
+            for name in ASSISTANTS:
+                self.data["profiles"][name].update(saved.get("profiles", {}).get(name, {}))
+            self.data["pool"].update(saved.get("pool", {}))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
+            self.error = str(error)
+            self.writable = False
 
     def save(self, data: dict) -> None:
-        protected = protect_password(json.dumps(data, ensure_ascii=False))
-        atomic_json(self.path, {"version": 1, "protected": protected})
+        if not self.writable:
+            raise ValueError(self.error)
+        write_protected(self.path, data, recovered=bool(self.error))
         self.data = copy.deepcopy(data)
         self.error = ""
 
@@ -136,6 +148,7 @@ def proxy_environment(profile: dict, base=None) -> dict[str, str]:
 
 
 def redact(value: str, secret_values=()) -> str:
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
     for secret in sorted((str(v) for v in secret_values if v), key=len, reverse=True):
         value = value.replace(secret, "[已隐藏]")
     value = re.sub(r"(?i)(https?://|socks5h?://)[^/\s@]+@", r"\1[已隐藏]@", value)
@@ -387,8 +400,7 @@ def pool_config(root: Path, pool: dict) -> dict:
     port = int(pool["port"])
     if not 1024 <= port <= 65535:
         raise ValueError("本地端口需为 1024～65535。")
-    if pool["strategy"] not in ("round-robin", "fill-first"):
-        raise ValueError("请选择轮询或优先用满的调度方式。")
+    routing = routing_config(pool)
     if not pool.get("api_key") or not pool.get("management_key"):
         raise ValueError("本地代理密钥缺失，请重新保存账号池设置。")
     return {"config-version": 8, "server": {"host": "127.0.0.1", "port": port},
@@ -397,10 +409,35 @@ def pool_config(root: Path, pool: dict) -> dict:
                            "disable-control-panel": True},
             "oauth": {"auth-dir": str((Path(root) / "auths").resolve())},
             "requests": {"proxy-url": validate_proxy(pool.get("proxy", ""), allow_empty=True)},
-            "routing": {"strategy": pool["strategy"], "session-affinity": bool(pool.get("session_affinity", True)),
-                        "session-affinity-ttl": "1h", "retry": {"request-retry": 2, "max-retry-interval": 10}},
+            "routing": {**routing, "session-affinity-ttl": "1h", "retry": {"request-retry": 2, "max-retry-interval": 10}},
             "observability": {"logs": {"logging-to-file": False, "debug": False,
                                        "request-log": False, "error-logs-max-files": 1}}}
+
+
+def routing_config(pool: dict) -> dict:
+    strategy = pool.get("strategy", "round-robin")
+    if strategy not in SCHEDULING:
+        raise ValueError("请选择有效的账号调度方式。")
+    return {"strategy": "round-robin" if strategy == "balanced" else strategy,
+            "session-affinity": False if strategy == "balanced" else bool(pool.get("session_affinity", True))}
+
+
+def member_rule(pool: dict, row: dict) -> dict:
+    rule = pool.get("member_rules", {}).get(row["name"], {})
+    priority, weight = rule.get("priority", row.get("priority", 0)), rule.get("weight", row.get("weight", 1))
+    if (isinstance(priority, bool) or not isinstance(priority, int) or not -1000000 <= priority <= 1000000
+            or isinstance(weight, bool) or not isinstance(weight, int) or not 1 <= weight <= 1000000):
+        raise ValueError("成员优先级需为整数，权重需为 1～1000000 的整数。")
+    return {"priority": priority, "weight": weight}
+
+
+def remember_member_rules(pool: dict, rows: list[dict]) -> dict:
+    value = copy.deepcopy(pool)
+    rules = value.setdefault("member_rules", {})
+    for row in rows:
+        if row["name"] not in rules:
+            rules[row["name"]] = member_rule(value, row)
+    return value
 
 
 def available_port(port: int) -> None:
@@ -458,12 +495,13 @@ class PoolClient:
     def request(self, method: str, path: str, *, management=True, **kwargs):
         key = self.pool["management_key" if management else "api_key"]
         prefix = "/v8/management" if management else "/v1"
+        timeout = kwargs.pop("timeout", (2, 12))
         with requests.Session() as session:
             session.trust_env = False
             try:
                 with session.request(method, self.base + prefix + path,
                                      headers={"Authorization": "Bearer " + key},
-                                     timeout=(2, 12), allow_redirects=False, **kwargs) as response:
+                                     timeout=timeout, allow_redirects=False, **kwargs) as response:
                     if not 200 <= response.status_code < 300:
                         raise ValueError(f"本地代理返回 HTTP {response.status_code}，请检查运行状态和账号。")
                     return response.json()
@@ -475,6 +513,61 @@ class PoolClient:
     def accounts(self) -> list[dict]:
         return [row for row in self.request("GET", "/credentials").get("files", [])
                 if row.get("provider", row.get("type")) == "codex"]
+
+    def quota(self, row: dict) -> dict:
+        index = row.get("auth_index")
+        if not index:
+            raise ValueError("账号缺少额度查询标识，请先刷新账号。")
+        headers = {"Authorization": "Bearer $TOKEN$", "Accept": "application/json",
+                   "User-Agent": "codex_cli_rs/0.134.0"}
+        claims = row.get("id_token")
+        account = claims.get("chatgpt_account_id") if isinstance(claims, dict) else None
+        account = account or row.get("account_id")
+        if account: headers["Chatgpt-Account-Id"] = str(account)
+        response = self.request("POST", "/requests/api-call", timeout=(2, 30), json={
+            "auth_index": str(index), "method": "GET", "url": USAGE_URL, "header": headers})
+        status = response.get("status_code")
+        if status != 200:
+            message = {401: "登录已过期，请重新登录此成员。", 403: "服务拒绝查询，请检查出口代理或账号权限。",
+                       429: "额度查询过于频繁，请稍后重试。"}.get(status, "额度服务暂时不可用，请稍后重试。")
+            raise ValueError(f"HTTP {status}：{message}")
+        try:
+            body = response.get("body")
+            return parse_codex_quota(json.loads(body) if isinstance(body, str) else body)
+        except (json.JSONDecodeError, TypeError):
+            raise ValueError("额度服务未返回有效 JSON，请检查网络后重试。") from None
+
+    def apply_scheduling(self, pool: dict, rows=None, cancelled=lambda: False) -> list[dict]:
+        routing = routing_config(pool)
+        rows = self.accounts() if rows is None else rows
+        changes = []
+        for row in rows:
+            rule = member_rule(pool, row)
+            effective = {"priority": rule["priority"] if pool["strategy"] == "fill-first" else 0,
+                         "weight": rule["weight"]}
+            if any(row.get(key, 0 if key == "priority" else 1) != value for key, value in effective.items()):
+                changes.append((row, effective))
+        previous = self.request("GET", "/config/routing")
+        applied = []
+        try:
+            for row, fields in changes:
+                if cancelled(): raise ValueError("调度更新已取消。")
+                # Record before sending: a timeout may occur after the server commits.
+                applied.append(row)
+                self.request("PATCH", "/credentials/fields", json={"name": row["name"], **fields})
+            if cancelled(): raise ValueError("调度更新已取消。")
+            self.request("PATCH", "/config/routing", json=routing)
+        except ValueError:
+            for row in reversed(applied):
+                try:
+                    self.request("PATCH", "/credentials/fields", json={"name": row["name"],
+                        "priority": row.get("priority"), "weight": row.get("weight")})
+                except ValueError:
+                    pass
+            try: self.request("PUT", "/config/routing", json=previous)
+            except ValueError: pass
+            raise
+        return self.accounts()
 
     def models(self) -> list[str]:
         # Use credential-specific models to exclude other imported providers.

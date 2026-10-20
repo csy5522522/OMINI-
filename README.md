@@ -2,7 +2,7 @@
 
 Windows 桌面工具箱。包含下载中心、校园网、课表、离线 TXT 笔记、Bright Data、多电脑文件夹同步、Omini API 和 AI 编程助手。
 
-当前源码版本 **1.1.6**。已发布版本：[Windows 安装包 1.1.6](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.6)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
+当前版本 **1.1.8**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.8)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
 ## 新增 Web 版（下载中心 + 学校课表）
 
@@ -40,14 +40,20 @@ py -3.11 app.py
 1. 完整构建已带引擎；源码运行可点「安装代理引擎」，或运行 `py -3.11 scripts/fetch_cliproxyapi.py`。下载固定官方 Windows 版本并验证 SHA-256，许可与来源随引擎保留。
 2. 设置本地端口和出口代理，点击「保存并启动服务」。默认只在 `127.0.0.1:8317` 提供带随机密钥的本地接口。
 3. 逐个「登录并添加成员」，在浏览器切换到相应账号并完成登录；或导入 Codex `auth.json` / CLIProxyAPI 的 Codex OAuth JSON。重复导入同一账号更新凭据。
-4. 轮询默认按新会话分配，同一会话保持账号；取消「同一会话保持账号」后逐请求分配。可停用 / 启用 / 移出成员，或选择优先使用首个可用账号。
-5. 读取模型并选择，在 Codex 标签选好 CLI / 桌面版和程序位置，然后点击「通过账号池启动 Codex」。该入口使用专用 `CODEX_HOME`，原有配置和会话目录保留。桌面版请先退出已有实例。
+4. 调度可选「轮询分配（按会话）」「雨露均沾（逐请求均分）」「优先账号（按优先级用满）」「加权轮询（按权重分配）」。运行中点击「保存并应用调度」生效。雨露均沾关闭会话保持；均分请求数量时，各请求消耗额度可能不同。
+5. 点击「成员优先级 / 权重」调整，或选中账号后「设为优先账号」。优先级仅在优先模式使用，其余模式自动按同级成员分配；权重用于加权轮询。启用会话保持时，已有会话继续按引擎的绑定规则使用原账号。
+6. 点击「查询所选额度」或「查询全部额度」，查看各成员的 5 小时、周剩余百分比和重置时间。查询仅读取用量，不发起模型生成；全量查询最多并发 3 个账号。失败保留上次快照并标记，未返回的周期显示「未返回」，悬停查看查询时间与错误原因。
+7. 读取模型并选择，在 Codex 标签选好 CLI / 桌面版和程序位置，然后点击「通过账号池启动 Codex」。该入口使用专用 `CODEX_HOME`，原有配置和会话目录保留。桌面版请先退出已有实例。
 
 网络测试只检查传输和 HTTP 状态，不验证登录或发起模型生成；HTTP 401 标为网络可达，403/429/5xx 显示需检查。Claude Code 使用 HTTP/HTTPS 代理端口。代理环境仅作用于从本页启动的进程，系统代理设置保持原值。
 
 设置与本地接口密钥由 Windows DPAPI 加密，保存在 `%APPDATA%/Omini工具箱/ai-assistants/settings.json`。OAuth 凭据按引擎原生格式保存在该目录的 `auths/`，专用 Codex 配置和会话在 `codex-pool/`。服务停止时清理临时运行配置；切换侧栏继续运行，完全退出工具箱时停止服务。成员登录需各自完成，发布包不含个人账号。
 
-验证：`py -3.11 -m unittest tests.test_ai_assistants -v`，覆盖真实引擎导入、启停、轮询、会话保持、OAuth 链接与取消、参数传递和配置隔离。源码与 EXE 都支持 `--self-test-ai-assistants`，使用临时目录检查完整侧栏、后台运行、主题和退出清理。
+1.1.8 起停服时直接显示本地成员，重启后恢复上次额度（标记「上次」）、模型列表与选择、所选成员、标签和页面位置。代理与启动配置编辑后自动保存，未完成的输入作为加密草稿保留。勾选「启动工具箱时恢复上次运行的账号池」后，上次运行中的服务会恢复；手动停止后保持停止。
+
+「操作记录」保存带时间的配置、调度、成员变更、额度查询、服务启停与助手启动记录，可导出全部记录 TXT。`state.json` 与 `history/` 使用 Windows 用户加密，配置与状态保留 `.bak`，成员凭据变更前在 `backups/credentials/` 保存加密备份。升级和卸载保留这些用户文件；旧版仅存在内存的日志没有历史文件。
+
+验证：`py -3.11 -m unittest tests.test_ai_assistants tests.test_codex_quota tests.test_pool_scheduling tests.test_assistant_persistence -v`，覆盖真实引擎导入、启停、轮询、会话保持、OAuth 链接与取消、参数传递、重启恢复和记录保存。源码与 EXE 都支持 `--self-test-ai-assistants`，使用临时目录检查完整侧栏、后台运行、主题、退出清理与重启恢复。
 
 ## Omini API（桌面版新增）
 
@@ -65,11 +71,11 @@ py -3.11 app.py
 
 ### Windows 安装版
 
-发布安装包位于 `dist-installer-1.1.3/Omini工具箱-1.1.3-Setup.exe`，GitHub 附件名为 `Omini-Toolbox-1.1.3-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+发布安装包位于 `dist-installer-1.1.8/Omini工具箱-1.1.8-Setup.exe`，GitHub 附件名为 `Omini-Toolbox-1.1.8-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.1.3/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
+已有完整 `dist-sync-1.1.8/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -77,7 +83,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.6`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.8`。
 
 1.1.6 移除内置浏览器核心与随包 FFmpeg，备忘录替换为原生离线 TXT 笔记。网页统一使用系统浏览器；安装器继续采用 LZMA2 高压缩。构建脚本自动排除 `tools/` 中残留的 FFmpeg 文件，无需手动删除旧开发工具。覆盖升级会清理旧版安装目录中的浏览器运行库和 FFmpeg，个人数据目录保留。
 

@@ -25,13 +25,13 @@ function Copy-CommandBinary {
 
 Invoke-Python @('-m', 'pip', 'install', '-r', 'requirements.txt')
 Invoke-Python @('scripts/fetch_syncthing.py')
+Invoke-Python @('scripts/fetch_cliproxyapi.py')
 Remove-Item -LiteralPath 'build' -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath 'dist' -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path 'tools' -Force | Out-Null
 
 Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'tools/yt-dlp.exe'
 Copy-CommandBinary 'aria2c.exe' 'tools/aria2c.exe'
-Copy-CommandBinary 'ffmpeg.exe' 'tools/ffmpeg.exe'
 
 # gallery-dl and spotdl do not ship portable Windows binaries. Create them from
 # their installed Python entry points so the final application has no Python requirement.
@@ -49,8 +49,7 @@ Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--collect-data
 Move-Item -LiteralPath 'dist/spotdl.exe' -Destination 'tools/spotdl.exe' -Force
 Remove-Item -LiteralPath 'gallery_dl_runner.py','spotdl_runner.py' -Force
 
-Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--windowed', '--runtime-hook', 'runtime_hook.py',
-    '--name', $appName, '--icon', 'assets/omini_icon.ico', '--add-data', 'assets;assets', 'app.py')
+Invoke-Python @('-m', 'PyInstaller', '--noconfirm', ($appName + '.spec'))
 $releaseDirectory = Join-Path 'dist' $appName
-Copy-Item -LiteralPath 'tools' -Destination (Join-Path $releaseDirectory 'tools') -Recurse -Force
+Invoke-Python @('release_packaging.py', '--copy-tools', (Join-Path $releaseDirectory 'tools'))
 Write-Host "Built: $(Join-Path $root (Join-Path $releaseDirectory ($appName + '.exe')))"

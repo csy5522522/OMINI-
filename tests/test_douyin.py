@@ -75,6 +75,7 @@ class NoteQueueTest(QueueButtonsTest):
         self.assertEqual(self.page.table.item(0, 2).text(), "图文")
         self.assertIn("2 张图片", task.title)
         self.assertIn("保存图片", self.page.queue_feedback.text())
+        self.until(lambda: bool(self.processes))
         self.processes[-1].complete()
         self.until(lambda: task.status == "completed" and not self.manager.workers)
         info = media_info(task.source, {"url": "https://www.douyin.com/note/123", "images": ["https://p3.douyinpic.com/one.jpg"]})

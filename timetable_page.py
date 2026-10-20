@@ -1,4 +1,4 @@
-"""School timetable sidebar page with offline viewing and an isolated login browser."""
+"""Offline timetable with HAR import and external browser login."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -41,138 +41,46 @@ class TimetableWorker(QThread):
 
 
 class SchoolLoginDialog(QDialog):
-    """Cookies are captured only from this explicit, off-the-record school session."""
-    def __init__(self, parent=None, profile=None):
+    """The system browser owns the web session; only pasted cookies enter the app."""
+    def __init__(self, parent=None):
         super().__init__(parent)
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
-        from PySide6.QtWebEngineWidgets import QWebEngineView
-        self.setWindowTitle("学校统一身份认证 · 教务课表")
-        self.resize(1000, 740)
-        self.cookies = {}
         self.cookie_header = ""
-        self._page_ready = False
-        self._completed = False
-        self._navigation = 0
-        self._probing = False
+        self.setWindowTitle("学校课表 · 系统浏览器登录")
+        self.resize(720, 340)
         layout = QVBoxLayout(self)
-        note = QLabel("在学校统一身份认证页面完成登录后，程序会自动进入课表、读取课程并更新本地课表。")
+        note = QLabel("1. 在系统浏览器完成学校统一认证，再打开个人课表。\n"
+                      "2. 导入课表：在浏览器按 F12 → 网络，刷新课表并查询所需学期，导出含响应内容的 HAR；返回工具箱点击「导入 HAR」。\n"
+                      "3. 也可从课表请求的请求标头复制 Cookie，粘贴到下方后点击「读取课表」。会话过期时重新获取。")
         note.setWordWrap(True); layout.addWidget(note)
-        # View is destroyed before the profile; its page is owned by the view.
-        self.web = QWebEngineView(self)
-        self.profile = profile if profile is not None else QWebEngineProfile(self)
-        self.web.setPage(QWebEnginePage(self.profile, self.web))
-        store = self.profile.cookieStore()
-        store.cookieAdded.connect(self._cookie_added)
-        store.cookieRemoved.connect(self._cookie_removed)
-        store.loadAllCookies()
-        layout.addWidget(self.web, 1)
-        self.message = QLabel("正在打开学校统一身份认证…"); self.message.setWordWrap(True); layout.addWidget(self.message)
         row = QHBoxLayout()
-        retry = QPushButton("统一认证登录"); retry.clicked.connect(lambda: self.web.load(QUrl(LOGIN_URL)))
-        timetable = QPushButton("进入课表"); timetable.clicked.connect(lambda: self.web.load(QUrl(PAGE_URL)))
-        read = QPushButton("读取已登录课表"); read.setObjectName("primary"); read.clicked.connect(self._read)
-        close = QPushButton("取消"); close.clicked.connect(self.reject)
-        for button in (retry, timetable, read, close): row.addWidget(button)
-        row.addStretch(); layout.addLayout(row)
-        self.web.urlChanged.connect(self._url_changed)
-        self.web.loadStarted.connect(lambda: self._url_changed(None))
-        self.web.loadFinished.connect(self._load_finished)
-        self.finished.connect(self._closed)
-        self.web.load(QUrl(LOGIN_URL))
+        login = QPushButton("打开统一认证"); login.clicked.connect(self.open_login)
+        timetable = QPushButton("打开个人课表"); timetable.clicked.connect(lambda: self.open_url(PAGE_URL))
+        row.addWidget(login); row.addWidget(timetable); row.addStretch(); layout.addLayout(row)
+        self.cookie = QLineEdit(); self.cookie.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cookie.setPlaceholderText("粘贴教务系统课表请求的 Cookie 请求头")
+        layout.addWidget(self.cookie)
+        self.message = QLabel("HAR 导入与在线刷新均保留离线课表。Cookie 仅用于学校教务接口。")
+        self.message.setWordWrap(True); layout.addWidget(self.message)
+        buttons = QHBoxLayout()
+        read = QPushButton("读取课表"); read.setObjectName("primary"); read.clicked.connect(self._read)
+        close = QPushButton("关闭"); close.clicked.connect(self.reject)
+        buttons.addStretch(); buttons.addWidget(read); buttons.addWidget(close); layout.addLayout(buttons)
 
-    def _closed(self, _result):
-        self._completed = True
-
-    def _url_changed(self, _url):
-        self._navigation += 1
-        self._page_ready = False
-        self._probing = False
-
-    def _is_timetable(self):
-        url = self.web.url()
-        return (url.scheme() == "https" and url.host().lower() == HOST
-                and url.path() == QUrl(PAGE_URL).path())
-
-    def _load_finished(self, ok):
-        url = self.web.url()
-        if not ok:
-            self.message.setText("页面加载失败，请点击「统一认证登录」重试。")
-        elif url.host().lower() == "sso.hualixy.edu.cn":
-            self.message.setText("请在统一身份认证页面完成登录，学校会将会话返回教务系统。")
-        elif url.host().lower() == HOST:
-            if url.path().startswith("/jwglxt/xtgl/index_"):
-                self.message.setText("已返回教务系统，正在进入课表…")
-                self.web.load(QUrl(PAGE_URL))
-            elif url.path() == "/jwglxt/xtgl/login_slogin.html":
-                self.message.setText("当前是教务系统旧登录页，请点击「统一认证登录」使用学校统一入口。")
-            elif self._is_timetable():
-                self.message.setText("已进入课表，正在自动读取…")
-                self._check_page_ready()
-            else:
-                self.message.setText("已返回教务系统，请点击「进入课表」，随后自动读取。")
+    def open_url(self, url):
+        if QDesktopServices.openUrl(QUrl(url)):
+            self.message.setText("已交给系统浏览器。完成登录后可导出 HAR，或粘贴课表请求 Cookie。")
         else:
-            self.message.setText("请完成学校登录流程并返回教务系统。")
+            self.message.setText("系统浏览器启动失败，请手动打开：" + url)
 
-    @staticmethod
-    def _key(cookie):
-        return (cookie.domain().lstrip(".").lower(), cookie.path() or "/", bytes(cookie.name()))
-
-    def _cookie_added(self, cookie):
-        domain, path, name = self._key(cookie)
-        if domain and (HOST == domain or HOST.endswith("." + domain)) and "/jwglxt/kbcx/".startswith(path):
-            if cookie.isSessionCookie() or cookie.expirationDate().toSecsSinceEpoch() > QDateTime_now():
-                self.cookies[(domain, path, name)] = bytes(cookie.value())
-                self._maybe_complete()
-
-    def _cookie_removed(self, cookie):
-        self.cookies.pop(self._key(cookie), None)
+    def open_login(self):
+        self.open_url(LOGIN_URL)
 
     def _read(self):
-        if not self._is_timetable():
-            self.message.setText("请先完成统一认证登录并进入学校课表页面。")
-            return
-        self._check_page_ready()
-
-    def _check_page_ready(self):
-        if self._completed or self._probing or not self._is_timetable():
-            return
-        self._probing = True
-        navigation = self._navigation
-        # The genuine timetable includes both semester selectors; an HTTP-200
-        # login form can otherwise masquerade as a successfully loaded page.
-        self.web.page().runJavaScript(
-            'Boolean(document.querySelector("select#xnm") && document.querySelector("select#xqm"))',
-            lambda ready: self._page_checked(navigation, ready))
-
-    def _page_checked(self, navigation, ready):
-        if self._completed or navigation != self._navigation or not self._is_timetable():
-            return
-        self._probing = False
-        self._page_ready = ready is True
-        if not self._page_ready:
-            self.message.setText("尚未加载到学生课表，请完成统一认证后点击「进入课表」。")
-            return
-        self._maybe_complete()
-
-    def _maybe_complete(self):
-        if self._completed or not self._page_ready or not self._is_timetable():
-            return
         try:
-            # Longer paths must precede less specific cookies with the same name.
-            pairs = sorted(self.cookies.items(), key=lambda pair: -len(pair[0][1]))
-            self.cookie_header = normalize_cookie("; ".join(
-                name.decode("ascii") + "=" + value.decode("ascii") for (_, _, name), value in pairs))
-        except (ValueError, UnicodeError):
-            self.message.setText("课表已打开，正在等待教务登录会话…")
-            return
-        self._completed = True
-        self.message.setText("登录成功，正在抓取并更新课表…")
+            self.cookie_header = normalize_cookie(self.cookie.text())
+        except ValueError as error:
+            self.message.setText(str(error)); return
         self.accept()
-
-
-def QDateTime_now():
-    from PySide6.QtCore import QDateTime
-    return QDateTime.currentSecsSinceEpoch()
 
 
 class TimetablePage(QWidget):
@@ -185,8 +93,6 @@ class TimetablePage(QWidget):
         self.worker = None
         self.stopping = False
         self.login_dialog = None
-        self._browser_profile = None
-        self._browser_cookies = {}
         self._build_ui()
         try:
             self.cookie.setText(unprotect_password(self.config.get("session_blob", "")))
@@ -210,7 +116,7 @@ class TimetablePage(QWidget):
         subtitle.setObjectName("muted"); layout.addWidget(subtitle)
         actions = QHBoxLayout()
         self.import_button = QPushButton("导入 HAR"); self.import_button.clicked.connect(self.choose_har)
-        self.login_button = QPushButton("登录并读取"); self.login_button.setObjectName("primary")
+        self.login_button = QPushButton("浏览器登录 / 导入说明"); self.login_button.setObjectName("primary")
         self.login_button.clicked.connect(self.login)
         self.refresh_button = QPushButton("在线刷新"); self.refresh_button.clicked.connect(self.refresh)
         self.class_button = QPushButton("查询班级课表"); self.class_button.clicked.connect(self.open_class_query)
@@ -250,7 +156,7 @@ class TimetablePage(QWidget):
         for widget in (self.use_start, self.start, self.start_note, self.save_button): date_row.addWidget(widget)
         date_row.addStretch(); date_row.setContentsMargins(0, 0, 0, 0)
         self.date_row = QWidget(); self.date_row.setLayout(date_row); layout.addWidget(self.date_row)
-        self.status = QLabel("点击「导入 HAR」读取已导出的课表，或点击「登录并读取」获取课表。")
+        self.status = QLabel("点击「导入 HAR」离线读取课表，或在系统浏览器登录后粘贴 Cookie 在线刷新。")
         self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.status)
         self.today_label = QLabel(); self.today_label.setWordWrap(True); self.today_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.today_label)
@@ -269,7 +175,7 @@ class TimetablePage(QWidget):
         self.list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.list, "课程列表")
-        self.class_page = ClassTimetablePage(self._ensure_browser_profile, self)
+        self.class_page = ClassTimetablePage(self)
         self.tabs.addTab(self.class_page, "班级课表")
         self.session_box = QGroupBox("会话设置（可选）"); form = QFormLayout(self.session_box)
         self.cookie = QLineEdit(); self.cookie.setEchoMode(QLineEdit.EchoMode.Password)
@@ -277,63 +183,12 @@ class TimetablePage(QWidget):
         self.remember = QCheckBox("使用 Windows 本机加密保存会话")
         self.remember.setChecked(bool(self.config.get("session_blob")))
         form.addRow("教务会话", self.cookie); form.addRow("", self.remember)
-        note = QLabel("登录并读取后会话仅用于学校课表接口。默认只在本次运行保留；会话过期时重新登录。")
+        note = QLabel("粘贴的会话仅用于学校课表接口。默认只在本次运行保留；会话过期时在系统浏览器重新登录。")
         note.setWordWrap(True); note.setObjectName("muted"); form.addRow(note)
         layout.addWidget(self.session_box)
         self.session_box.hide()
         self.session_toggle.toggled.connect(self.session_box.setVisible)
         self.tabs.currentChanged.connect(self._tab_changed)
-
-    def _ensure_browser_profile(self):
-        if self._browser_profile is None:
-            from PySide6.QtWebEngineCore import QWebEngineProfile
-            from PySide6.QtNetwork import QNetworkCookie
-            self._browser_profile = QWebEngineProfile()
-            # Delete the profile on the next event loop, after its child pages are gone.
-            self.destroyed.connect(self._browser_profile.deleteLater)
-            self._browser_profile.downloadRequested.connect(self._download_requested)
-            store = self._browser_profile.cookieStore()
-            store.cookieAdded.connect(self._browser_cookie_added)
-            store.cookieRemoved.connect(self._browser_cookie_removed)
-            try:
-                header = normalize_cookie(self.cookie.text()) if self.cookie.text().strip() else ""
-            except ValueError:
-                header = ""
-            if header:
-                for part in header.split(";"):
-                    name, value = part.strip().split("=", 1)
-                    cookie = QNetworkCookie(name.encode("ascii"), value.encode("ascii"))
-                    cookie.setDomain(HOST); cookie.setPath("/jwglxt"); cookie.setSecure(True)
-                    self._browser_profile.cookieStore().setCookie(cookie, QUrl("https://" + HOST))
-        return self._browser_profile
-
-    def _browser_cookie_added(self, cookie):
-        domain, path, name = SchoolLoginDialog._key(cookie)
-        if domain and (HOST == domain or HOST.endswith("." + domain)) and "/jwglxt/kbcx/".startswith(path):
-            if cookie.isSessionCookie() or cookie.expirationDate().toSecsSinceEpoch() > QDateTime_now():
-                self._browser_cookies[(domain, path, name)] = bytes(cookie.value())
-                self._sync_browser_cookie()
-
-    def _browser_cookie_removed(self, cookie):
-        self._browser_cookies.pop(SchoolLoginDialog._key(cookie), None)
-        self._sync_browser_cookie()
-
-    def _sync_browser_cookie(self):
-        try:
-            pairs = sorted(self._browser_cookies.items(), key=lambda pair: -len(pair[0][1]))
-            self.cookie.setText("; ".join(name.decode("ascii") + "=" + value.decode("ascii")
-                                          for (_, _, name), value in pairs))
-        except UnicodeError:
-            pass
-
-    def _download_requested(self, download):
-        if self.stopping: download.cancel(); return
-        name = Path(download.suggestedFileName() or "班级课表.pdf").name
-        target, _ = QFileDialog.getSaveFileName(self, "保存学校课表导出文件", str(Path.home() / "Downloads" / name), "全部文件 (*)")
-        if not target: download.cancel(); return
-        destination = Path(target)
-        download.setDownloadDirectory(str(destination.parent)); download.setDownloadFileName(destination.name)
-        download.accept()
 
     def _tab_changed(self, _index):
         is_class = self.tabs.currentWidget() is self.class_page
@@ -343,7 +198,7 @@ class TimetablePage(QWidget):
 
     def open_class_query(self):
         self.tabs.setCurrentWidget(self.class_page)
-        if not self.class_page.main_view: self.class_page.open_query()
+        self.class_page.open_query()
 
     def _config(self):
         start = self.start.date()
@@ -381,21 +236,19 @@ class TimetablePage(QWidget):
 
     def login(self):
         if self.worker or self.stopping: return
-        try:
-            dialog = SchoolLoginDialog(self, profile=self._ensure_browser_profile())
-        except (ImportError, ValueError, RuntimeError):
-            self.status.setText("登录窗口组件缺失，请安装完整依赖或使用 HAR 导入。")
-            return
+        if self.login_dialog:
+            self.login_dialog.raise_(); self.login_dialog.activateWindow(); return
+        dialog = SchoolLoginDialog(self)
         self.login_dialog = dialog
         dialog.finished.connect(self._login_finished)
         dialog.open()
+        dialog.open_login()
 
     def _login_finished(self, result):
         dialog = self.login_dialog; self.login_dialog = None
-        if result == QDialog.DialogCode.Accepted:
+        if result == QDialog.DialogCode.Accepted and not self.stopping:
             self.cookie.setText(dialog.cookie_header)
             self.refresh()
-        dialog.web.stop()
         dialog.deleteLater()
 
     def refresh(self):
@@ -404,7 +257,7 @@ class TimetablePage(QWidget):
             cookie = normalize_cookie(self.cookie.text())
             year, term = str(self.year.value()), self.term.currentData()
         except ValueError as error:
-            self.status.setText(str(error) + " 点击「登录并读取」可自动获取会话。")
+            self.status.setText(str(error) + " 请在系统浏览器登录后粘贴课表请求 Cookie，或导入 HAR。")
             return
         self._start(lambda cancelled: fetch_schedule(cookie, year, term, cancelled), "正在从教务系统读取课表…")
 

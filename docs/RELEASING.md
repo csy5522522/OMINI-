@@ -11,12 +11,17 @@
 ```powershell
 $version = py -3.11 app_version.py
 py -3.11 -m unittest tests.test_omini_api tests.omini_api.test_omini_multisite tests.omini_api.test_omini_site_discovery tests.omini_api.test_local_proxy_paths tests.test_queue tests.test_icloud_notes tests.test_updater -v
+py -3.11 -m unittest tests.test_ai_assistants tests.test_text_notes tests.test_local_ffmpeg tests.test_timetable tests.test_class_timetable -v
 ./scripts/build_omini_api.ps1 -DistDir "dist-sync-$version" -WorkDir "build-sync-$version"
 & "./dist-sync-$version/Omini工具箱/Omini工具箱.exe" --self-test-omini-api
+& "./dist-sync-$version/Omini工具箱/Omini工具箱.exe" --self-test-ai-assistants
+py -3.11 scripts/verify_compact_release.py "dist-sync-$version/Omini工具箱" --report verification/compact-release.json
 ./scripts/build_installer.ps1
 ```
 
 安装包生成到 `dist-installer-版本/`，附带 SHA-256 文件。可用 `scripts/verify_installer.py` 在临时目录验证安装、启动、覆盖升级和卸载后的数据保留；该验证在本机已有正式安装时会保留现有安装并停止执行。
+
+完整构建只使用 PySide6-Essentials 的原生 Widgets，显式排除 Qt WebEngine、QML 及 Chromium 资源。FFmpeg 由本机安装提供，所有打包入口共用 `release_packaging.copy_release_tools`，排除 FFmpeg、ffprobe、ffplay 及其随包元数据。媒体验证脚本支持 `--ffmpeg` 指定本机现有程序，运行环境也可通过 PATH 提供。安装器使用 `lzma2/ultra64`，压缩耗时比旧快速配置更长，分发文件更小。
 
 ## 提交与发布
 

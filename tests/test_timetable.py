@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 import app
 import school_timetable as protocol
 from timetable_page import TimetablePage, SchoolLoginDialog
+from campus_network import unprotect_password as unprotect
 
 
 def payload(week="1-16周(单)"):
@@ -187,135 +188,29 @@ class TimetableUiTest(unittest.TestCase):
             finally:
                 for p in reversed(patches): p.stop()
 
-    def test_login_profile_is_ephemeral_and_cookie_scoped(self):
-        # Load a local blank page rather than contacting the school in a regression test.
-        from PySide6.QtNetwork import QNetworkCookie
-        with patch("timetable_page.LOGIN_URL", "about:blank"):
-            dialog = SchoolLoginDialog()
-        self.assertTrue(dialog.profile.isOffTheRecord())
-        for domain in ("jw.hualixy.edu.cn", "evil.example"):
-            cookie = QNetworkCookie(b"session", b"TOKEN"); cookie.setDomain(domain); cookie.setPath("/jwglxt")
-            dialog._cookie_added(cookie)
-        self.assertEqual(len(dialog.cookies), 1)
-        dialog.web.stop(); dialog.reject(); dialog.deleteLater(); self.qt.processEvents()
-
-    def test_sso_entry_callback_and_cookie_domains(self):
-        from PySide6.QtCore import QUrl
-        from PySide6.QtNetwork import QNetworkCookie
-        from PySide6.QtWidgets import QPushButton
-        with patch("timetable_page.LOGIN_URL", "about:blank"):
-            dialog = SchoolLoginDialog()
-        # The login button uses the CAS service callback, not the old login form.
-        button = next(b for b in dialog.findChildren(QPushButton) if b.text() == "统一认证登录")
-        with patch.object(dialog.web, "load") as load:
-            button.click()
-            self.assertEqual(load.call_args.args[0].toString(), protocol.LOGIN_URL)
-            self.assertIn("jw.hualixy.edu.cn%2Fsso%2Fddlogin", protocol.LOGIN_URL)
-        for domain in ("sso.hualixy.edu.cn", "jw.hualixy.edu.cn", ".hualixy.edu.cn"):
-            cookie = QNetworkCookie(domain.encode(), b"TOKEN"); cookie.setDomain(domain); cookie.setPath("/")
-            dialog._cookie_added(cookie)
-        domains = {key[0] for key in dialog.cookies}
-        self.assertEqual(domains, {"jw.hualixy.edu.cn", "hualixy.edu.cn"})
-        with patch.object(dialog.web, "url", return_value=QUrl(protocol.BASE_URL + "/jwglxt/xtgl/index_initMenu.html")), \
-             patch.object(dialog.web, "load") as load:
-            dialog._load_finished(True)
-            self.assertEqual(load.call_args.args[0].toString(), protocol.PAGE_URL)
-        with patch.object(dialog.web, "url", return_value=QUrl(protocol.LOGIN_URL)), patch.object(dialog, "accept") as accept:
-            dialog._read(); accept.assert_not_called()
-        dialog.web.stop(); dialog.reject(); dialog.deleteLater(); self.qt.processEvents()
-
-
-    def test_auto_capture_waits_for_cookie_and_runs_once(self):
-        from PySide6.QtCore import QUrl
-        from PySide6.QtNetwork import QNetworkCookie
-        for cookie_first in (True, False):
-            with self.subTest(cookie_first=cookie_first), patch("timetable_page.LOGIN_URL", "about:blank"):
-                dialog = SchoolLoginDialog()
-            callbacks = []
-            cookie = QNetworkCookie(b"JSESSIONID", b"TOKEN"); cookie.setDomain(protocol.HOST); cookie.setPath("/jwglxt")
-            with patch.object(dialog.web, "url", return_value=QUrl(protocol.PAGE_URL)), \
-                 patch.object(dialog.web.page(), "runJavaScript", side_effect=lambda script, callback: callbacks.append(callback)), \
-                 patch.object(dialog, "accept") as accept:
-                if cookie_first: dialog._cookie_added(cookie)
-                dialog._load_finished(True); dialog._load_finished(True)
-                self.assertEqual(len(callbacks), 1, "Duplicate loads started concurrent page checks")
-                accept.assert_not_called()
-                callbacks[0](True)
-                if not cookie_first:
-                    accept.assert_not_called(); dialog._cookie_added(cookie)
-                self.assertEqual(dialog.cookie_header, "JSESSIONID=TOKEN")
-                dialog._cookie_added(cookie); dialog._load_finished(True)
-                accept.assert_called_once()
-            dialog.web.stop(); dialog.reject(); dialog.deleteLater(); self.qt.processEvents()
-
-    def test_login_html_and_stale_navigation_never_trigger_capture(self):
-        from PySide6.QtCore import QUrl
-        from PySide6.QtNetwork import QNetworkCookie
-        with patch("timetable_page.LOGIN_URL", "about:blank"):
-            dialog = SchoolLoginDialog()
-        callbacks = []
-        cookie = QNetworkCookie(b"JSESSIONID", b"TOKEN"); cookie.setDomain(protocol.HOST); cookie.setPath("/")
-        with patch.object(dialog.web, "url", return_value=QUrl(protocol.PAGE_URL)), \
-             patch.object(dialog.web.page(), "runJavaScript", side_effect=lambda script, callback: callbacks.append(callback)), \
-             patch.object(dialog, "accept") as accept:
-            dialog._cookie_added(cookie)
-            dialog._load_finished(False); self.assertEqual(callbacks, [])
-            dialog._load_finished(True); callbacks.pop()(False)
-            accept.assert_not_called()
-            dialog._load_finished(True)
-            dialog._url_changed(QUrl(protocol.LOGIN_URL))
-            callbacks.pop()(True); accept.assert_not_called()
-            dialog._load_finished(True)
-            dialog.reject(); callbacks.pop()(True); accept.assert_not_called()
-        dialog.web.stop(); dialog.deleteLater(); self.qt.processEvents()
-
-    def test_auto_login_completion_fetches_and_persists_course_data(self):
-        from PySide6.QtCore import QUrl
-        from PySide6.QtNetwork import QNetworkCookie
+    def test_external_login_validates_pasted_cookie_and_fetches(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "cache.json"
-            page = TimetablePage({}, lambda _: None, cache, lambda value: cache.write_text(json.dumps(value)))
-            with patch("timetable_page.LOGIN_URL", "about:blank"):
+            page = TimetablePage({}, lambda _: None, cache, lambda v: cache.write_text(json.dumps(v)))
+            with patch("timetable_page.QDesktopServices.openUrl", return_value=True) as opener:
                 page.login()
+            self.assertEqual(opener.call_args.args[0].toString(), protocol.LOGIN_URL)
             dialog = page.login_dialog
-            cookie = QNetworkCookie(b"JSESSIONID", b"TOKEN"); cookie.setDomain(protocol.HOST); cookie.setPath("/jwglxt")
-            callbacks = []
-            with patch.object(dialog.web, "url", return_value=QUrl(protocol.PAGE_URL)), \
-                 patch.object(dialog.web.page(), "runJavaScript", side_effect=lambda script, callback: callbacks.append(callback)), \
-                 patch("timetable_page.fetch_schedule", return_value=protocol.parse_schedule(payload(), "2026", "3")) as fetch:
-                dialog._cookie_added(cookie)
-                dialog._load_finished(True); callbacks.pop()(True)
-                self.until(lambda: page.worker is None and page.schedule is not None)
-                fetch.assert_called_once()
-                self.assertEqual(fetch.call_args.args[0], "JSESSIONID=TOKEN")
-                self.assertIsNone(page.login_dialog)
-                self.assertEqual(page.list.rowCount(), 2)
-                self.assertEqual(len(json.loads(cache.read_text())["courses"]), 2)
+            self.assertFalse(hasattr(dialog, "web"))
+            dialog.cookie.setText("a=x\r\nInjected: token"); dialog._read()
+            self.assertIs(page.login_dialog, dialog)
+            self.assertEqual(dialog.cookie_header, "")
+            dialog.cookie.setText("Cookie: JSESSIONID=LOCAL_TOKEN")
+            captured = protocol.parse_schedule(payload(), "2026", "3")
+            with patch("timetable_page.fetch_schedule", return_value=captured) as fetch:
+                dialog._read()
+                self.until(lambda: page.worker is None)
+            self.assertIsNone(page.login_dialog)
+            self.assertEqual(page.cookie.text(), "JSESSIONID=LOCAL_TOKEN")
+            self.assertEqual(fetch.call_args.args[0], "JSESSIONID=LOCAL_TOKEN")
+            self.assertEqual(page.list.rowCount(), 2)
+            self.assertNotIn("LOCAL_TOKEN", cache.read_text())
             page.stop(); page.deleteLater(); self.qt.processEvents()
-
-    def test_real_browser_page_selectors_trigger_automatic_fetch(self):
-        from PySide6.QtCore import QUrl
-        from PySide6.QtNetwork import QNetworkCookie
-        with tempfile.TemporaryDirectory() as directory:
-            cache = Path(directory) / "cache.json"
-            page = TimetablePage({}, lambda _: None, cache, lambda value: cache.write_text(json.dumps(value)))
-            with patch("timetable_page.LOGIN_URL", "about:blank"):
-                page.login()
-            dialog = page.login_dialog
-            cookie = QNetworkCookie(b"JSESSIONID", b"TOKEN"); cookie.setDomain(protocol.HOST); cookie.setPath("/jwglxt")
-            with patch("timetable_page.fetch_schedule", return_value=protocol.parse_schedule(payload(), "2026", "3")) as fetch:
-                dialog.profile.cookieStore().setCookie(cookie, QUrl(protocol.BASE_URL))
-                dialog.web.setHtml('<!doctype html><select id="xnm"><option>2026</option></select>'
-                                   '<select id="xqm"><option>3</option></select>', QUrl(protocol.PAGE_URL))
-                self.until(lambda: page.schedule is not None and page.worker is None)
-                fetch.assert_called_once()
-                self.assertEqual(len(json.loads(cache.read_text())["courses"]), 2)
-            page.stop(); page.deleteLater(); self.qt.processEvents()
-
-
-def unprotect(blob):
-    from campus_network import unprotect_password
-    return unprotect_password(blob)
 
 
 if __name__ == "__main__": unittest.main()

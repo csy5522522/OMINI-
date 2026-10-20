@@ -70,6 +70,10 @@ def main():
             report["complete_install"] = all((target / item).is_file() for item in
                 ("Omini工具箱.exe", "tools/syncthing.exe", "_internal/python311.dll", "安装版使用说明.txt", "unins000.exe"))
             assert report["complete_install"]
+            report["no_browser_or_bundled_ffmpeg"] = not any(
+                'webengine' in path.name.lower() or path.name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay'))
+                for path in target.rglob('*'))
+            assert report["no_browser_or_bundled_ffmpeg"]
             source = root / f"dist-sync-{version}/Omini工具箱"
             for name in ("Omini工具箱.exe", "tools/syncthing.exe"):
                 with (source / name).open("rb") as original, (target / name).open("rb") as copied:
@@ -86,6 +90,15 @@ def main():
             update_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
             assert update_report and all(value is True for value in update_report.values())
             report["installed_update_smoke"] = True
+            run([str(app), "--self-test-notes"], environment)
+            notes_root = Path(environment["APPDATA"]) / "Omini工具箱"
+            notes_report = json.loads((notes_root / "notes-smoke.json").read_text(encoding="utf-8"))
+            assert notes_report["ok"] and notes_report["plain_txt_saved"]
+            note_file = next((notes_root / "text-notes").glob('*.txt'))
+            note_original = note_file.read_bytes()
+            legacy_cache = notes_root / "icloud-notes.json"
+            legacy_cache.write_text('legacy-encrypted-cache-sentinel', encoding='utf-8')
+            report["installed_txt_smoke"] = True
             api_environment = environment.copy()
             api_environment.pop("QT_QPA_PLATFORM", None)
             api_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "api-check.json")
@@ -94,7 +107,20 @@ def main():
             api_report = json.loads((temp_root / "api-check.json").read_text(encoding="utf-8"))
             assert api_report.get("ok") is True and len(api_report.get("tabs", [])) == 7
             report["installed_api_smoke"] = True
+            obsolete = ["tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
+                        "_internal/PySide6/Qt6WebEngineCore.dll", "_internal/PySide6/QtWebEngineCore.pyd",
+                        "_internal/PySide6/QtWebEngineProcess.exe", "_internal/PySide6/resources/icudtl.dat",
+                        "_internal/PySide6/translations/qtwebengine_locales/en-US.pak",
+                        "_internal/PySide6/Qt6Quick.dll", "_internal/PySide6/Qt6Qml.dll",
+                        "_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"]
+            for relative in obsolete:
+                path = target / relative
+                assert not path.exists(), path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'old-version-managed-runtime-fixture')
             run(command, environment)
+            report["upgrade_removes_obsolete_runtimes"] = all(not (target / name).exists() for name in obsolete)
+            assert report["upgrade_removes_obsolete_runtimes"]
             assert user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["upgrade_preserves_user_files"] = True
             uninstaller = target / "unins000.exe"
@@ -108,6 +134,8 @@ def main():
             report["personal_settings_preserved"] = "keep-personal-settings" in data.read_text(encoding="utf-8")
             report["synced_files_preserved"] = synced.read_text(encoding="utf-8") == "keep-synced-files"
             report["extra_files_preserved"] = user_file.read_text(encoding="utf-8") == "keep-extra-files"
+            report["txt_notes_and_legacy_cache_preserved"] = (note_file.read_bytes() == note_original
+                and legacy_cache.read_text(encoding='utf-8') == 'legacy-encrypted-cache-sentinel')
             (root / "verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             assert all(value is True for key, value in report.items() if key != "installer"), report
         finally:

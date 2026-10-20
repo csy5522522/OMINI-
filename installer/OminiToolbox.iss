@@ -27,9 +27,10 @@ UninstallDisplayIcon={app}\Omini工具箱.exe
 UninstallDisplayName=Omini工具箱
 WizardStyle=modern
 ShowLanguageDialog=no
-Compression=lzma2/fast
+Compression=lzma2/ultra64
 SolidCompression=yes
-LZMANumBlockThreads=2
+LZMAUseSeparateProcess=yes
+LZMANumBlockThreads=1
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
@@ -47,6 +48,33 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "{#ReleaseDir}\*"; DestDir: "{app}"; Excludes: "README.md,文件夹同步使用说明.txt"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "安装版使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+; Remove obsolete application runtimes on upgrade. User data is under APPDATA.
+[InstallDelete]
+Type: files; Name: "{app}\tools\ffmpeg*"
+Type: files; Name: "{app}\tools\ffprobe.exe"
+Type: files; Name: "{app}\tools\ffplay.exe"
+Type: files; Name: "{app}\_internal\PySide6\Qt6Web*.dll"
+Type: files; Name: "{app}\_internal\PySide6\QtWeb*.pyd"
+Type: files; Name: "{app}\_internal\PySide6\QtWebEngineProcess.exe"
+Type: files; Name: "{app}\_internal\PySide6\Qt6Quick*.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6Qml*.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6Pdf.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6OpenGL.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6VirtualKeyboard.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6Positioning.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6PrintSupport.dll"
+Type: files; Name: "{app}\_internal\PySide6\Qt6SerialPort.dll"
+Type: files; Name: "{app}\_internal\PySide6\QtPositioning.pyd"
+Type: files; Name: "{app}\_internal\PySide6\QtPrintSupport.pyd"
+Type: files; Name: "{app}\_internal\PySide6\QtQuickWidgets.pyd"
+Type: files; Name: "{app}\_internal\PySide6\plugins\imageformats\qpdf.dll"
+Type: files; Name: "{app}\_internal\PySide6\plugins\platforminputcontexts\qtvirtualkeyboardplugin.dll"
+Type: filesandordirs; Name: "{app}\_internal\PySide6\plugins\position"
+Type: filesandordirs; Name: "{app}\_internal\PySide6\resources"
+Type: filesandordirs; Name: "{app}\_internal\PySide6\translations\qtwebengine_locales"
+Type: filesandordirs; Name: "{app}\_internal\PySide6\qml"
+Type: filesandordirs; Name: "{app}\_internal\PySide6\plugins\qmltooling"
 
 [Icons]
 Name: "{group}\Omini工具箱"; Filename: "{app}\Omini工具箱.exe"; WorkingDir: "{app}"

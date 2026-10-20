@@ -14,7 +14,6 @@ from PySide6.QtWidgets import QApplication
 
 import app
 from icloud_notes import NotesStore, decode_note_body, import_notes_har
-from icloud_notes_page import ICloudNotesPage
 
 
 def varint(value):
@@ -133,38 +132,6 @@ class NotesTest(unittest.TestCase):
         note = next(n for n in NotesStore(store.path).data["notes"] if n["id"] == "icloud:note")
         self.assertTrue(note["complete"]); self.assertEqual(note["body"], "完整正文\n第二行 ☀")
 
-    def test_ui_search_edit_trash_restore_and_restart(self):
-        path = self.root / "cache.json"; page = ICloudNotesPage(path)
-        page.store.merge(self.snapshot()); page.refresh_folders()
-        self.assertEqual(page.notes.count(), 2)
-        page.search.setText("第二行"); self.assertEqual(page.notes.count(), 1)
-        page.editor.setPlainText("本地编辑"); self.assertTrue(page.flush())
-        page.search.clear(); self.assertEqual(page.notes.count(), 2)
-        page.delete_note(); page.flush(); self.assertEqual(page.notes.count(), 1)
-        page.folders.setCurrentRow(page.folders.count() - 1); self.assertEqual(page.notes.count(), 1)
-        page.restore_note(); page.flush(); self.assertEqual(page.notes.count(), 0)
-        page.folders.setCurrentRow(0); page.new_note(); page.editor.setPlainText("新正文")
-        page.stop(); page.deleteLater(); self.qt.processEvents()
-        restored = ICloudNotesPage(path)
-        self.assertEqual(restored.notes.count(), 3)
-        self.assertIn("本地编辑", [n["body"] for n in restored.store.data["notes"]])
-        self.assertIn("新正文", [n["body"] for n in restored.store.data["notes"]])
-        restored.stop(); restored.deleteLater()
-
-    def test_import_worker_and_browser_profile(self):
-        page = ICloudNotesPage(self.root / "cache.json")
-        page.start_import(self.har([response(fixture())]))
-        for _ in range(500):
-            if page.worker is None: break
-            QTest.qWait(10)
-        self.assertIsNone(page.worker); self.assertEqual(page.notes.count(), 2)
-        with patch("icloud_notes_page.NOTES_URL", "about:blank"):
-            page.open_online()
-        self.assertIsNotNone(page.web); self.assertTrue(page.profile.isOffTheRecord())
-        self.assertIs(page.web.page().profile(), page.profile)
-        page.apply_theme(False); page.apply_theme(True)
-        page.stop(); page.deleteLater(); QTest.qWait(50)
-
     def test_main_window_theme_button_persistence_and_settings_sync(self):
         patches = [patch.object(app, name, self.root / target) for name, target in {
             "APP_DIR": ".", "SETTINGS_FILE": "settings.json", "TASKS_FILE": "tasks.json",
@@ -173,11 +140,11 @@ class NotesTest(unittest.TestCase):
         try:
             with patch("campus_page.wifi_ssids", return_value=()):
                 window = app.MainWindow(); window.show(); QTest.qWait(30)
-                window.nav.setCurrentRow(3); self.assertIs(window.stack.currentWidget(), window.icloud_page)
+                window.nav.setCurrentRow(3); self.assertIs(window.stack.currentWidget(), window.notes_page)
                 QTest.mouseClick(window.theme_button, Qt.MouseButton.LeftButton)
                 self.assertEqual(window.settings["theme"], "浅色")
                 self.assertEqual(window.settings_page.theme.currentText(), "浅色")
-                self.assertFalse(window.icloud_page.dark)
+                self.assertFalse(window.notes_page.dark)
                 self.assertEqual(json.loads(app.SETTINGS_FILE.read_text(encoding="utf-8"))["theme"], "浅色")
                 window.quitting = True; window.close(); QTest.qWait(50); window.deleteLater()
                 window = app.MainWindow()

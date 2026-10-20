@@ -1,4 +1,4 @@
-"""Omini工具箱 - 下载、校园网、课表、备忘录、网页抓取、同步与 Omini API。"""
+"""Omini工具箱 - 下载、校园网、课表、备忘录、同步、API 与 AI 编程助手。"""
 from __future__ import annotations
 
 import sys
@@ -34,18 +34,15 @@ from PySide6.QtWidgets import (
 
 from campus_page import CampusPage
 from timetable_page import TimetablePage
-from icloud_notes_page import ICloudNotesPage
+from text_notes_page import TextNotesPage
+from local_ffmpeg import resolve_ffmpeg
 from brightdata_page import BrightDataPage
 from folder_sync_page import FolderSyncPage
 from omini_api_page import OminiApiPage
+from ai_assistants_page import AiAssistantsPage
 from updater_page import UpdatePanel
 from updater import launch_installer
 from app_version import APP_VERSION
-
-# Required when the optional school login browser is first opened after startup.
-if QApplication.instance() is None:
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-
 
 APP_NAME = "Omini工具箱"
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
@@ -234,6 +231,14 @@ class EngineError(RuntimeError):
 
 
 def find_engine(name: str) -> str:
+    if name == "ffmpeg":
+        try:
+            configured = load_json(SETTINGS_FILE, {}).get("ffmpeg_path", "")
+            excluded = [resource_path("tools"), Path(__file__).resolve().parent / "tools",
+                        Path(sys.executable).resolve().parent / "tools"]
+            return str(resolve_ffmpeg(configured, excluded))
+        except ValueError as error:
+            raise EngineError(str(error)) from error
     executable = f"{name}.exe" if os.name == "nt" else name
     if getattr(sys, "frozen", False):
         adjacent = Path(sys.executable).resolve().parent / "tools" / executable
@@ -251,8 +256,8 @@ def find_engine(name: str) -> str:
     raise EngineError(f"未找到 {executable}。请使用完整发布包，或将该工具加入系统 PATH。")
 
 
-def engine_environment() -> dict[str, str]:
-    """Expose the bundled engine directory to tools that invoke ffmpeg themselves."""
+def engine_environment(ffmpeg_path: str | None = None) -> dict[str, str]:
+    """Expose local FFmpeg and packaged download engines to child processes."""
     environment = os.environ.copy()
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["PYTHONUTF8"] = "1"
@@ -260,6 +265,15 @@ def engine_environment() -> dict[str, str]:
     if getattr(sys, "frozen", False):
         candidates.insert(0, Path(sys.executable).resolve().parent / "tools")
     paths = [str(path) for path in candidates if path.exists()]
+    if not ffmpeg_path:
+        configured = load_json(SETTINGS_FILE, {}).get("ffmpeg_path", "")
+        if configured:
+            try:
+                ffmpeg_path = str(resolve_ffmpeg(configured))
+            except ValueError:
+                pass  # Tasks that do not require FFmpeg still work.
+    if ffmpeg_path:
+        paths.insert(0, str(Path(ffmpeg_path).parent))
     if paths:
         environment["PATH"] = os.pathsep.join(paths + [environment.get("PATH", "")])
     return environment
@@ -279,6 +293,11 @@ def build_command(
     output = Path(task.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     options = task.options
+    needs_ffmpeg = task.type in {"video", "audio", "m3u8", "spotify"} or (
+        task.type == "gallery" and is_douyin_url(task.source) and not media_info_file)
+    image_note = options.get("content_kind") == "images" or re.search(r"/(?:share/)?note/\d+", task.source)
+    ffmpeg = find_engine("ffmpeg") if needs_ffmpeg and not media_info_file and not image_note else None
+    ffmpeg_args = ["--ffmpeg-location", ffmpeg] if ffmpeg else []
 
     if task.type == "m3u8":
         yt_dlp = find_engine("yt-dlp")
@@ -293,7 +312,7 @@ def build_command(
         else:
             output_template = str(output / "%(title)s.%(ext)s")
         return [
-            yt_dlp, "--encoding", "utf-8", "--newline", "--continue", "--no-playlist",
+            yt_dlp, *ffmpeg_args, "--encoding", "utf-8", "--newline", "--continue", "--no-playlist",
             "--format", "bv*+ba/b", "--merge-output-format", "mp4",
             "--concurrent-fragments", "4", "--fragment-retries", "10",
             "--output", output_template, task.source,
@@ -307,7 +326,7 @@ def build_command(
             "1080p": "bv[height<=1080]+ba/b", "720p": "bv[height<=720]+ba/b",
             "480p": "bv[height<=480]+ba/b",
         }
-        command = [yt_dlp, "--encoding", "utf-8", "--newline", "--continue", "-f", format_map.get(quality, "bv*+ba/b"),
+        command = [yt_dlp, *ffmpeg_args, "--encoding", "utf-8", "--newline", "--continue", "-f", format_map.get(quality, "bv*+ba/b"),
                    "--merge-output-format", "mp4", "-o", str(output / "%(title)s.%(ext)s")]
         if options.get("subtitles"):
             command += ["--write-subs", "--sub-langs", "zh.*,en.*"]
@@ -330,7 +349,7 @@ def build_command(
     if task.type == "audio":
         yt_dlp = find_engine("yt-dlp")
         audio_format = options.get("format", "mp3").lower()
-        command = [yt_dlp, "--encoding", "utf-8", "--newline", "--continue", "-x", "--audio-format", audio_format,
+        command = [yt_dlp, *ffmpeg_args, "--encoding", "utf-8", "--newline", "--continue", "-x", "--audio-format", audio_format,
                    "--audio-quality", "0", "-o", str(output / "%(title)s.%(ext)s")]
         if cookies_from_browser:
             command += ["--cookies-from-browser", cookies_from_browser]
@@ -339,7 +358,7 @@ def build_command(
         return command + [task.source]
 
     if task.type == "spotify":
-        return [find_engine("spotdl"), task.source, "--output", str(output / "{artists} - {title}.{output-ext}")]
+        return [find_engine("spotdl"), task.source, "--ffmpeg", ffmpeg, "--output", str(output / "{artists} - {title}.{output-ext}")]
 
     if task.type == "file":
         aria2 = find_engine("aria2c")
@@ -428,13 +447,16 @@ class DownloadWorker(QThread):
             )
             self.output.emit(self.task.id, "$ " + subprocess.list2cmdline(command))
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            local_ffmpeg = next((command[index + 1] for index, argument in enumerate(command[:-1])
+                                 if argument in {"--ffmpeg-location", "--ffmpeg"}), None)
+            environment = engine_environment(local_ffmpeg)
             with self._process_lock:
                 if self._stop_requested:
                     self.finished_task.emit(self.task.id, "paused" if self._pause_requested else "cancelled", "", "")
                     return
                 self._process = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                    encoding="utf-8", errors="replace", creationflags=flags, env=engine_environment(),
+                    encoding="utf-8", errors="replace", creationflags=flags, env=environment,
                 )
             assert self._process.stdout is not None
             for line in self._process.stdout:
@@ -969,7 +991,7 @@ class DownloadPage(QWidget):
         dialog.media_ready.connect(lambda info: self.manager.attach_browser_media_and_retry(task_id, info))
         dialog.finished.connect(lambda _: self.browser_dialogs.pop(task_id, None))
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.queue_feedback.setText("已识别抖音图文入口，正在临时浏览器中解析图片；若页面提示验证，请在解析窗口完成。")
+        self.queue_feedback.setText("请在系统浏览器查看图文，可导入公开图片地址加入下载队列。")
         dialog.show()
 
     def request_cookie(self, task_id: str, engine_message: str) -> None:
@@ -1164,15 +1186,49 @@ class SettingsPage(QWidget):
         save = QPushButton("保存设置"); save.setObjectName("primary"); save.clicked.connect(self.save)
         form.addRow("", save)
         layout.addWidget(box)
+        ffmpeg_box = QGroupBox("本机 FFmpeg"); ffmpeg_form = QFormLayout(ffmpeg_box)
+        self.ffmpeg_path = QLineEdit(settings.get("ffmpeg_path", ""))
+        self.ffmpeg_path.setPlaceholderText("留空自动检测系统 PATH；也可选择本机 ffmpeg.exe")
+        path_row = QWidget(); path_layout = QHBoxLayout(path_row); path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.addWidget(self.ffmpeg_path, 1)
+        choose = QPushButton("选择程序"); choose.clicked.connect(self.choose_ffmpeg); path_layout.addWidget(choose)
+        detect = QPushButton("检测"); detect.clicked.connect(self.detect_ffmpeg); path_layout.addWidget(detect)
+        ffmpeg_form.addRow("FFmpeg 路径", path_row)
+        self.ffmpeg_status = QLabel("视频合并、M3U8 和音频转换使用本机 FFmpeg。选择后点击上方「保存设置」生效。")
+        self.ffmpeg_status.setWordWrap(True); self.ffmpeg_status.setTextFormat(Qt.TextFormat.PlainText)
+        ffmpeg_form.addRow(self.ffmpeg_status)
+        layout.addWidget(ffmpeg_box)
         self.updates = UpdatePanel(APP_VERSION, APP_DIR / "updates", self)
         layout.addWidget(self.updates)
         layout.addStretch()
 
     def save(self) -> None:
-        self.settings.update({"download_dir": self.download_dir.text(), "concurrency": self.concurrency.value(), "theme": self.theme.currentText()})
+        self.settings.update({"download_dir": self.download_dir.text(), "concurrency": self.concurrency.value(), "theme": self.theme.currentText(),
+                              "ffmpeg_path": self.ffmpeg_path.text().strip().strip('"')})
         save_json(SETTINGS_FILE, self.settings)
         self.settings_changed.emit(self.settings)
         QMessageBox.information(self, "设置已保存", "新任务将使用更新后的默认下载目录与队列并发数。")
+
+    def choose_ffmpeg(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择本机 FFmpeg", self.ffmpeg_path.text(), "FFmpeg (ffmpeg.exe);;全部文件 (*)")
+        if path:
+            self.ffmpeg_path.setText(path)
+            self.detect_ffmpeg()
+
+    def detect_ffmpeg(self):
+        try:
+            path = resolve_ffmpeg(self.ffmpeg_path.text(), [resource_path("tools"), Path(sys.executable).parent / "tools"])
+            result = subprocess.run([str(path), "-version"], capture_output=True, timeout=5,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if result.returncode:
+                raise ValueError("FFmpeg 检测失败，请检查所选程序。")
+            lines = result.stdout.decode("utf-8", "replace").splitlines()
+            if not lines or not lines[0].lower().startswith("ffmpeg version"):
+                raise ValueError("所选程序未返回 FFmpeg 版本，请重新选择 ffmpeg.exe。")
+            version = lines[0]
+            self.ffmpeg_status.setText(f"已检测：{path}\n{version}")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            self.ffmpeg_status.setText(str(error))
 
 
 class MainWindow(QMainWindow):
@@ -1197,6 +1253,7 @@ class MainWindow(QMainWindow):
         menu.addAction("校园网立即登录", self.campus_page.manual_login)
         menu.addAction("打开文件夹同步", self.open_folder_sync)
         menu.addAction("打开 Omini API", self.open_omini_api)
+        menu.addAction("打开 AI 编程助手", self.open_ai_assistants)
         menu.addSeparator()
         menu.addAction("退出工具箱", self.quit_from_tray)
         self.tray.setContextMenu(menu)
@@ -1227,7 +1284,7 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(24)
         self.nav = QListWidget(); self.nav.setObjectName("navigation")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "☁  iCloud 备忘录", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "＋  更多工具（敬请期待）"):
+        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  离线 TXT 笔记", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "◇  AI 编程助手", "＋  更多工具（敬请期待）"):
             item = QListWidgetItem(label); item.setSizeHint(item.sizeHint() + QSize(0, 12)); self.nav.addItem(item)
         self.nav.setCurrentRow(0); self.nav.currentRowChanged.connect(self.change_page)
         side_layout.addWidget(self.nav, 1)
@@ -1247,8 +1304,8 @@ class MainWindow(QMainWindow):
                                             APP_DIR / "school-timetable.json",
                                             lambda value: save_json(APP_DIR / "school-timetable.json", value), self)
         self.stack.addWidget(self.timetable_page)
-        self.icloud_page = ICloudNotesPage(APP_DIR / "icloud-notes.json", self)
-        self.stack.addWidget(self.icloud_page)
+        self.notes_page = TextNotesPage(APP_DIR / "text-notes.json", self)
+        self.stack.addWidget(self.notes_page)
         self.settings_page = SettingsPage(self.settings); self.settings_page.settings_changed.connect(self.on_settings_changed); self.stack.addWidget(self.settings_page)
         self.settings_page.updates.install_requested.connect(self.install_update)
         self.brightdata_page = BrightDataPage(APP_DIR / "brightdata.json", self)
@@ -1257,11 +1314,17 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.sync_page)
         self.omini_api_page = OminiApiPage(self.settings, lambda value: save_json(SETTINGS_FILE, value), self)
         self.stack.addWidget(self.omini_api_page)
+        self.ai_assistants_page = AiAssistantsPage(APP_DIR / "ai-assistants", self)
+        self.stack.addWidget(self.ai_assistants_page)
         placeholder = QLabel("更多工具正在规划中")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stack.addWidget(placeholder)
         layout.addWidget(self.stack, 1)
-        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · iCloud 备忘录 · Bright Data · 文件夹同步 · Omini API")); self.menuBar().addAction(about)
+        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 离线 TXT 笔记 · Bright Data · 文件夹同步 · Omini API · AI 编程助手")); self.menuBar().addAction(about)
+
+    def open_ai_assistants(self) -> None:
+        self.nav.setCurrentRow(8)
+        self.restore_window()
 
     def open_omini_api(self) -> None:
         self.nav.setCurrentRow(7)
@@ -1304,7 +1367,7 @@ class MainWindow(QMainWindow):
         self.theme_button.setText("☀  切换白天模式" if dark else "☾  切换黑夜模式")
         self.theme_button.setToolTip("当前：黑夜模式" if dark else "当前：白天模式")
         self.settings_page.theme.setCurrentText("深色" if dark else "浅色")
-        # Keep menus, editor selections and Chromium's preferred color scheme consistent.
+        # Keep menus and editor selections consistent with the current theme.
         palette = QPalette()
         for role, color in {
             QPalette.ColorRole.Window: "#111827" if dark else "#f8fafc",
@@ -1319,7 +1382,7 @@ class MainWindow(QMainWindow):
         }.items():
             palette.setColor(role, QColor(color))
         QApplication.instance().setPalette(palette)
-        self.icloud_page.apply_theme(dark)
+        self.notes_page.apply_theme(dark)
         self.omini_api_page.apply_theme(dark)
         if dark:
             self.setStyleSheet("""
@@ -1334,7 +1397,7 @@ class MainWindow(QMainWindow):
                 QListWidget#navigation::item:selected { background: #1d4ed8; color: white; }
                 QGroupBox { border: 1px solid #334155; border-radius: 9px; margin-top: 12px; padding: 16px 10px 10px; font-weight: 700; }
                 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
-                QLineEdit, QTextEdit, QComboBox, QSpinBox, QTimeEdit, QDateEdit { background: #1e293b; border: 1px solid #475569; border-radius: 5px; padding: 7px; selection-background-color: #2563eb; }
+                QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QTimeEdit, QDateEdit { background: #1e293b; border: 1px solid #475569; border-radius: 5px; padding: 7px; selection-background-color: #2563eb; }
                 QLineEdit:focus, QComboBox:focus { border-color: #60a5fa; }
                 QPushButton, QToolButton { background: #334155; border: 0; border-radius: 5px; padding: 8px 13px; }
                 QPushButton:hover, QToolButton:hover { background: #475569; }
@@ -1349,7 +1412,7 @@ class MainWindow(QMainWindow):
                 QFrame#sidebar { background: #eaf1fb; border-right: 1px solid #cbd5e1; } QLabel#logo { color: #1d4ed8; font-size: 23px; font-weight: 700; } QLabel#pageTitle { font-size: 26px; font-weight: 700; } QLabel#sectionTitle { font-size: 17px; font-weight: 700; margin-top: 8px; } QLabel#muted { color: #64748b; }
                 QListWidget#navigation { border: 0; background: transparent; } QListWidget#navigation::item { border-radius: 7px; padding: 11px 10px; margin: 2px 0; } QListWidget#navigation::item:selected { background: #2563eb; color: white; }
                 QGroupBox { border: 1px solid #cbd5e1; border-radius: 9px; margin-top: 12px; padding: 16px 10px 10px; font-weight: 700; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
-                QLineEdit, QTextEdit, QComboBox, QSpinBox, QTimeEdit, QDateEdit { background: white; border: 1px solid #94a3b8; border-radius: 5px; padding: 7px; } QLineEdit:focus, QComboBox:focus { border-color: #2563eb; }
+                QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QTimeEdit, QDateEdit { background: white; border: 1px solid #94a3b8; border-radius: 5px; padding: 7px; } QLineEdit:focus, QComboBox:focus { border-color: #2563eb; }
                 QPushButton, QToolButton { background: #e2e8f0; border: 0; border-radius: 5px; padding: 8px 13px; } QPushButton:hover, QToolButton:hover { background: #cbd5e1; } QPushButton#primary { background: #2563eb; color: white; font-weight: 700; }
                 QPushButton:disabled, QToolButton:disabled { background: #f1f5f9; color: #94a3b8; }
                 QTabWidget::pane { border: 1px solid #cbd5e1; border-radius: 7px; top: -1px; } QTabBar::tab { background: #e2e8f0; padding: 8px 14px; margin-right: 2px; } QTabBar::tab:selected { background: #2563eb; color: white; }
@@ -1357,9 +1420,9 @@ class MainWindow(QMainWindow):
             """)
 
     def closeEvent(self, event: Any) -> None:
-        if not self.quitting and (self.campus_page.config.get("background", False) or self.sync_page.background_enabled) and QSystemTrayIcon.isSystemTrayAvailable():
+        if not self.quitting and (self.campus_page.config.get("background", False) or self.sync_page.background_enabled or self.ai_assistants_page.wants_background) and QSystemTrayIcon.isSystemTrayAvailable():
             self.hide()
-            self.tray.showMessage(APP_NAME, "已在后台运行，文件夹同步和校园网任务继续执行。右键托盘图标可退出。")
+            self.tray.showMessage(APP_NAME, "已在托盘后台运行，右键托盘图标可退出。")
             event.ignore(); return
         active = len(self.manager.workers)
         if active:
@@ -1371,18 +1434,19 @@ class MainWindow(QMainWindow):
             for task_id in list(self.manager.workers):
                 self.manager.pause(task_id)
                 self.manager.workers[task_id].wait(4000)
-        if not self.icloud_page.flush():
-            answer = QMessageBox.question(self, "本地备忘录尚未保存", "本地备忘录保存失败。仍要退出并放弃未保存的编辑吗？")
+        if not self.notes_page.flush():
+            answer = QMessageBox.question(self, "TXT 笔记尚未保存", "TXT 保存失败。仍要退出并放弃未保存的编辑吗？")
             if answer != QMessageBox.StandardButton.Yes:
                 self.quitting = False; self.pending_update = None; event.ignore(); return
         self.campus_page.stop()
         self.timetable_page.stop()
-        self.icloud_page.stop()
+        self.notes_page.stop()
         self.brightdata_page.stop()
         self.sync_page.stop()
         self.omini_api_page.stop()
+        self.ai_assistants_page.stop()
         self.settings_page.updates.stop()
-        pending = [page.worker for page in (self.campus_page, self.timetable_page, self.icloud_page, self.brightdata_page, self.sync_page)
+        pending = [page.worker for page in (self.campus_page, self.timetable_page, self.notes_page, self.brightdata_page, self.sync_page, self.ai_assistants_page)
                    if page.worker and page.worker.isRunning()]
         update_worker = self.settings_page.updates.worker
         if update_worker and update_worker.isRunning():
@@ -1415,6 +1479,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--self-test-ai-assistants" in sys.argv:
+        from ai_assistants_self_test import run_ai_assistants_test
+        sys.exit(run_ai_assistants_test(sys.modules[__name__]))
     if "--self-test-omini-api" in sys.argv:
         from omini_api_self_test import run_api_test
         sys.exit(run_api_test(sys.modules[__name__]))

@@ -62,7 +62,8 @@ class QueueButtonsTest(unittest.TestCase):
             process = ControlledProcess()
             self.processes.append(process)
             return process
-        self.patches += [patch.object(app, "build_command", return_value=["test-engine"]),
+        self.patches += [patch("campus_page.wifi_ssids", return_value=()),
+                         patch.object(app, "build_command", return_value=["test-engine"]),
                          patch.object(app.subprocess, "Popen", side_effect=popen)]
         for item in self.patches:
             item.start()

@@ -21,7 +21,8 @@ def package():
     executable = release / "Omini工具箱.exe"
     if not executable.is_file():
         raise RuntimeError("Build the Windows application before packaging")
-    shutil.copytree(root / "tools", release / "tools", dirs_exist_ok=True)
+    from release_packaging import copy_release_tools
+    copy_release_tools(root / "tools", release / "tools")
     shutil.copyfile(root / "README.md", release / "README.md")
     (release / "文件夹同步使用说明.txt").write_text(
         f"Omini 工具箱 {version} · 多电脑文件夹同步\n\n"

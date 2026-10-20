@@ -1,19 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(SPECPATH)))
+from release_packaging import EXCLUDED_QT_FRONTENDS, keep_resource
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
     datas=[('assets', 'assets')],
-    hiddenimports=[],
+    hiddenimports=['socks'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['runtime_hook.py'],
-    excludes=[],
+    excludes=EXCLUDED_QT_FRONTENDS,
     noarchive=False,
     optimize=0,
 )
+a.datas = [entry for entry in a.datas if keep_resource(entry[0])]
+a.binaries = [entry for entry in a.binaries if keep_resource(entry[0])]
 pyz = PYZ(a.pure)
 
 exe = EXE(

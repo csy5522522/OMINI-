@@ -1,0 +1,9 @@
+{
+  "version": "8.1.2",
+  "variant": "essentials",
+  "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.7z",
+  "archive_sha256": "e25b682664025d49034c981afb4bae36238a40f29a3cc1c713ad9a8b5b3528f6",
+  "executable_sha256": "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e",
+  "source": "https://github.com/FFmpeg/FFmpeg/tree/n8.1.2",
+  "license": "GPL-3.0-or-later"
+}

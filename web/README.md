@@ -13,7 +13,7 @@ python -m pip install -r requirements.txt
 python web_server.py --open
 ```
 
-源码目录 `tools/` 中需包含对应下载引擎：yt-dlp、aria2c、ffmpeg、gallery-dl、spotdl。可从已有完整 Windows 安装目录复制 `tools/`；也支持在 PATH 中查找。界面会显示引擎是否就绪。
+源码目录 `tools/` 中需包含对应下载引擎：yt-dlp、aria2c、gallery-dl、spotdl。可从已有完整 Windows 安装目录复制 `tools/`；也支持在 PATH 中查找。FFmpeg 使用本机安装，请加入 PATH 或在桌面版设置中指定本机程序。界面会显示引擎是否就绪。
 
 ```powershell
 python web_server.py --port 18766 --download-dir "D:\Omini下载" --open
@@ -39,7 +39,7 @@ python web_server.py --host 100.101.102.103 --port 18765
 - 视频、音频、普通文件、图库、M3U8、磁力链接、字幕、Spotify 音频。
 - 任务进度、日志、搜索和状态筛选；暂停、继续、取消和重试；并发数可配置为 1～5。
 - Web 服务重启后保留队列，未完成任务变为暂停，点击继续恢复。
-- Web 版接收公开链接。交互式登录、浏览器 Cookie 提取和抖音图文的内置浏览器回退仍由桌面版提供；需要这些能力时使用桌面版。
+- Web 版接收公开链接。桌面版支持主动选择浏览器 Cookie 和手动导入公开图文图片地址；学校登录与网页预览使用系统浏览器。
 - 文件操作只在指定 Web 下载根目录和任务子目录内进行，不提供任意本地路径读取和命令执行。
 
 ## 学校课表

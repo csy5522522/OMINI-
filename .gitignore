@@ -59,3 +59,8 @@ desktop.ini
 **/omini_sites.json
 **/omini_site_discovery.jsonl
 *.har
+
+# Assistant runtime credentials and dedicated Codex sessions belong in AppData.
+**/ai-assistants/auths/
+**/ai-assistants/codex-pool/
+**/ai-assistants/settings.json

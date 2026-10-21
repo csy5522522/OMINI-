@@ -25,6 +25,7 @@ const paths = {
   graduation:'m2 9 10-5 10 5-10 5L2 9Zm4 2v6q6 5 12 0v-6M22 9v9',
   info:'M12 8h.01M11 12h1v5M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20',
   x:'m6 6 12 12M6 18 18 6',
+  user:'M20 21v-2a7 7 0 0 0-14 0v2M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8',
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name] || paths.file}"/></svg>`;
 function icons(root = document) { $$('[data-icon]', root).forEach(el => { el.outerHTML = icon(el.dataset.icon); }); }
@@ -33,6 +34,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 let tasks = [], currentType = 'video', currentFilter = 'all', selectedWeek = 1;
 let timetable = null, savedTimetable = null, firstMonday = '', demo = false, connected = false;
 let toastTimer, polling = false;
+let features = {downloads:true,timetable:true,notes:true}, auth = {authenticated:false,user:null,access_password_required:false};
+let authMode = 'login', authGeneration = 0, timetableLoaded = false, timetableLoading = false;
 const terms = {3:'第一学期',12:'第二学期',16:'第三学期'};
 const statuses = {queued:'等待中',running:'下载中',completed:'已完成',paused:'已暂停',failed:'失败',cancelled:'已取消'};
 const typeNames = {video:'视频',audio:'音频',file:'文件',gallery:'图库',m3u8:'M3U8',torrent:'磁力链接',subtitle:'字幕',spotify:'Spotify 音频'};
@@ -44,26 +47,42 @@ function toast(message, error = false) {
 }
 function showDialog(id) { const el = $(`#${id}`); if (!el.open) el.showModal(); }
 async function api(path, body) {
+  const generation=authGeneration;
   const options = {headers:{'X-Omini-Client':'web'}, credentials:'same-origin'};
   if (body !== undefined) { options.method='POST'; options.headers['Content-Type']='application/json'; options.body=JSON.stringify(body); }
   const response = await fetch(path, options);
   const value = await response.json();
-  if (response.status === 401 && path !== '/api/login') showDialog('login-dialog');
-  if (!response.ok) throw new Error(value.error || '请求失败，请重试。');
+  if (response.status === 401 && generation===authGeneration && !['/api/login','/api/auth/login','/api/auth/register'].includes(path)) requireLogin();
+  if (!response.ok) {const error=new Error(value.error || '请求失败，请重试。');error.status=response.status;throw error;}
   return value;
 }
 function setConnection(ok) {
   connected = ok;
   $('#connection').classList.toggle('offline', !ok);
   $('#connection').innerHTML = `<i></i>${ok ? '服务已连接' : '服务未连接'}`;
-  $('#submit-download').disabled = !ok;
+  $('#submit-download').disabled = !ok || !features.downloads;
 }
 function route() {
-  const page = location.hash === '#timetable' ? 'timetable' : 'downloads';
+  const wanted = ['timetable','notes'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'downloads';
+  const page = features[wanted] ? wanted : Object.keys(features).find(key=>features[key]) || 'workspace';
+  if (location.hash !== `#${page}`) location.hash = `#${page}`;
   $$('.page').forEach(el => { el.hidden = el.id !== `page-${page}`; });
   $$('.nav-item[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
-  $('#breadcrumb-page').textContent = page === 'timetable' ? '学校课表' : '下载中心';
-  document.title = `${page === 'timetable' ? '学校课表' : '下载中心'} · Omini`;
+  const title = {downloads:'下载中心',timetable:'学校课表',notes:'超级备忘录',workspace:'工作空间'}[page];
+  $('#breadcrumb-page').textContent = title;
+  document.title = `${title} · Omini`;
+  if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();
+  if (page === 'notes' && connected && typeof loadMemos === 'function') loadMemos();
+}
+function applyFeatures(selected = features) {
+  for (const key of ['downloads','timetable','notes']) {
+    if (typeof selected[key] === 'boolean') features[key] = selected[key];
+    $(`[data-page="${key}"]`).hidden = !features[key];
+    if (!$('#settings-dialog').open) $(`#feature-${key}`).checked = features[key];
+  }
+  $('.timetable-shortcut').hidden = !features.timetable;
+  if (!features.timetable) timetableLoaded = false;
+  route();
 }
 window.addEventListener('hashchange', route); route();
 const now = new Date();
@@ -85,10 +104,64 @@ $$('dialog').forEach(el => el.addEventListener('click', e => {
   const r = el.getBoundingClientRect();
   if (e.target === el && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) el.close();
 }));
-$('#login-dialog').addEventListener('cancel', e => e.preventDefault());
+$('#login-dialog').addEventListener('cancel', e => {if(!auth.authenticated)e.preventDefault();});
+function setAuth(value) {
+  auth = value;
+  const label = auth.user?.email || (auth.authenticated ? '工作空间账号' : '邮箱登录 / 注册');
+  $('#account-label').textContent = label; $('#account-open').title = label;
+  $('#sidebar-account-label').textContent = auth.user?.email || (auth.authenticated ? '账号设置' : '邮箱注册 / 登录');
+  $('#settings-account').textContent = auth.user?.email || (auth.authenticated ? '已通过服务访问密码登录' : '尚未登录');
+  $('#account-logout').hidden = !auth.authenticated;
+  $('#access-mode').hidden = !auth.access_password_required;
+  setAuthMode(authMode);
+}
+function setAuthMode(mode) {
+  authMode = mode === 'access' && !auth.access_password_required ? 'login' : mode;
+  const register = authMode === 'register', access = authMode === 'access';
+  $('#auth-title').textContent = $('#auth-submit').textContent = register ? '邮箱注册' : access ? '访问密码登录' : '邮箱登录';
+  $('#email-fields').hidden = access;
+  $('#confirm-fields').hidden = !register;
+  $('#account-email').required = $('#account-password').required = !access;
+  $('#account-confirm').required = register;
+  $('#account-password').autocomplete = register ? 'new-password' : 'current-password';
+  $('#access-fields').hidden = !(access || register && auth.access_password_required);
+  $('#access-password').required = !$('#access-fields').hidden;
+  $('#login-error').textContent = '';
+  $$('[data-auth-mode]').forEach(button=>{const selected=button.dataset.authMode===authMode;button.classList.toggle('selected',selected);button.setAttribute('aria-selected',String(selected));});
+}
+$$('[data-auth-mode]').forEach(button=>button.addEventListener('click',()=>setAuthMode(button.dataset.authMode)));
+function resetWorkspace() {
+  if(typeof resetMemos==='function')resetMemos();
+  authGeneration++; tasks=[]; timetable=null; savedTimetable=null; firstMonday=''; demo=false; timetableLoaded=false;
+  renderTasks(); updateWeekOptions(); renderTimetable(); setConnection(false);
+  $('#engine-list').innerHTML=''; $('#download-dir').textContent=''; $('#settings-dir').textContent='';
+  $('#detail-content').textContent=''; $('#school-cookie').value='';
+  $('#detail-title').textContent=''; $('#source').value=''; $('#filename').value='';
+}
+function requireLogin() {
+  resetWorkspace(); setAuth({...auth,authenticated:false,user:null});
+  $$('dialog').forEach(dialog=>{if(dialog.id!=='login-dialog'&&dialog.open)dialog.close();});
+  showDialog('login-dialog');
+}
+function openAccount(){if(auth.authenticated)showDialog('settings-dialog');else showDialog('login-dialog');}
+$('#account-open').addEventListener('click',openAccount);
+$('#account-sidebar').addEventListener('click',openAccount);
+$('#choose-features').addEventListener('click',()=>showDialog('settings-dialog'));
+$('#account-logout').addEventListener('click',async()=>{
+  const button=$('#account-logout');button.disabled=true;
+  try{await api('/api/auth/logout',{});requireLogin();toast('已退出登录');}
+  catch(error){toast(error.message,true);}finally{button.disabled=false;}
+});
 $('#login-form').addEventListener('submit', async e => {
-  e.preventDefault(); const button = $('button', e.target); button.disabled = true;
-  try { await api('/api/login', {password:$('#access-password').value}); $('#access-password').value=''; $('#login-error').textContent=''; $('#login-dialog').close(); await loadInitial(); }
+  e.preventDefault(); const button = $('#auth-submit'); button.disabled = true;
+  try {
+    if(authMode==='register'&&$('#account-password').value!==$('#account-confirm').value)throw new Error('两次输入的密码不一致。');
+    const path=authMode==='access'?'/api/login':`/api/auth/${authMode}`;
+    const body=authMode==='access'?{password:$('#access-password').value}:{email:$('#account-email').value.trim(),password:$('#account-password').value,access_password:$('#access-password').value};
+    await api(path,body); authGeneration++;
+    $('#account-password').value='';$('#account-confirm').value='';$('#access-password').value='';
+    $('#login-error').textContent=''; $('#login-dialog').close(); await loadInitial();
+  }
   catch (error) { $('#login-error').textContent=error.message; }
   finally { button.disabled=false; }
 });
@@ -151,18 +224,26 @@ $('#task-search').addEventListener('input',renderTasks);
 async function refreshTasks() {
   if (polling) return;
   polling=true;
+  const generation=authGeneration;
   try {
-    const state=await api('/api/state'); tasks=state.tasks; setConnection(true); renderTasks();
+    const state=await api('/api/state');if(generation!==authGeneration)return;
+    tasks=state.tasks; setConnection(true); applyFeatures(state.features); renderTasks();
     $('#download-dir').textContent=state.download_dir; $('#download-dir').title=state.download_dir;
     $('#settings-dir').textContent=state.download_dir; $('#version-label').textContent=state.version;
     if (!$('#settings-dialog').open) $('#concurrency').value=state.concurrency;
     $('#engine-list').innerHTML=Object.entries(state.engines).map(([name,ready])=>`<div class="engine-row"><span>${esc(name)}</span><span class="engine-status ${ready?'':'missing'}"><i></i>${ready?'就绪':'未安装'}</span></div>`).join('');
-  } catch (error) { setConnection(false); }
+  } catch (error) { if(generation===authGeneration)setConnection(false); }
   finally { polling=false; }
 }
 $('#refresh-tasks').addEventListener('click',async()=>{await refreshTasks();toast(connected?'队列已刷新':'连接失败，请确认 Web 服务正在运行。',!connected);});
 $('#settings-open').addEventListener('click',()=>showDialog('settings-dialog'));
-$('#settings-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/settings',{concurrency:Number($('#concurrency').value)});$('#settings-dialog').close();toast('偏好设置已保存');}catch(error){toast(error.message,true);}});
+$('#settings-form').addEventListener('submit',async e=>{
+  e.preventDefault();const button=$('#settings-save');button.disabled=true;
+  try{const selected={downloads:$('#feature-downloads').checked,timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked};
+    const result=await api('/api/settings',{concurrency:Number($('#concurrency').value),features:selected});
+    $('#settings-dialog').close();applyFeatures(result.features||selected);await refreshTasks();toast('功能加载与偏好设置已保存');
+  }catch(error){toast(error.message,true);}finally{button.disabled=false;}
+});
 
 // Timetable dates use local calendar days to avoid DST offset errors.
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -176,6 +257,7 @@ function updateWeekOptions() {
   $('#week-select').value=selectedWeek;
 }
 function acceptTimetable(data) {
+  timetableLoaded=true;
   savedTimetable=data.schedule; timetable=data.schedule; firstMonday=data.first_monday||''; demo=false;
   $('#demo-toggle').textContent='预览示例课表'; $('#first-monday').value=firstMonday;
   const current=currentWeek(); selectedWeek=current&&current>0&&current<=maxWeeks()?current:1;
@@ -256,7 +338,17 @@ $('#demo-toggle').addEventListener('click',()=>{
   timetable={schema:1,year:String(new Date().getFullYear()),term:'3',updated_at:'示例',period_times:{},courses:rows.map(([name,teacher,location,weekday,start,end])=>({name,teacher,location,weekday,periods:Array.from({length:end-start+1},(_,i)=>start+i),weeks:Array.from({length:16},(_,i)=>i+1),week_text:'1-16周 · 示例',campus:'示例校区',credits:'',class_name:''}))};
   selectedWeek=1;$('#demo-toggle').textContent='退出示例预览';updateWeekOptions();renderTimetable();toast('正在预览示例课表，你的数据保持原样');
 });
-async function loadInitial(){await refreshTasks();if(connected){try{acceptTimetable(await api('/api/timetable'));}catch(error){toast(error.message,true);}}}
-renderTasks();updateWeekOptions();renderTimetable();loadInitial();
-setInterval(()=>{if(!document.hidden&&!$('#login-dialog').open)refreshTasks();},2000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('#login-dialog').open)refreshTasks();});
+async function loadTimetable(){
+  if(timetableLoading||!features.timetable||!connected)return;
+  timetableLoading=true;const generation=authGeneration;
+  try{const data=await api('/api/timetable');if(generation===authGeneration&&features.timetable)acceptTimetable(data);}
+  catch(error){if(generation===authGeneration)toast(error.message,true);}finally{timetableLoading=false;}
+}
+async function loadInitial(){
+  const generation=authGeneration;
+  try{const session=await api('/api/auth/session');if(generation!==authGeneration)return;setAuth(session);if(!auth.authenticated){requireLogin();return;}await refreshTasks();}
+  catch(error){setConnection(false);toast(error.message,true);}
+}
+renderTasks();updateWeekOptions();renderTimetable();setAuth(auth);loadInitial();
+setInterval(()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshTasks();},2000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshTasks();});

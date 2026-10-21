@@ -1,14 +1,26 @@
 # Omini工具箱
 
-Windows 桌面工具箱。包含下载中心、校园网、课表、离线 TXT 笔记、Bright Data、多电脑文件夹同步、Omini API 和 AI 编程助手。
+Windows 桌面工具箱。包含下载中心、校园网、课表、超级备忘录、Bright Data、多电脑文件夹同步、Omini API 和 AI 编程助手。
 
-当前版本 **1.1.8**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.1.8)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
+当前版本 **1.2.0**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.2.0)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
-## 新增 Web 版（下载中心 + 学校课表）
+## 统一账号与超级备忘录
 
-双击源码根目录的 `Start-Omini-Web.cmd`，或运行 `python web_server.py --open`，在浏览器打开 `http://127.0.0.1:18765`。提供重新设计的深浅主题界面、下载队列与文件取回、学校课表导入和周视图。Web 入口需使用源码运行环境与下载引擎，Windows 安装包提供桌面版。
+网页入口：https://my.omini.cn。管理入口：https://my.omini.cn/admin。
 
-支持绑定本机 Tailscale IPv4 后从其他组网设备访问，下载仍由服务电脑处理。Web 队列与课表独立保存。启动参数、远程访问密码和课表导入方法见 [Web 版使用说明](web/README.md)。
+桌面侧栏点击「邮箱注册 / 登录」，或进入「设置 → 邮箱账号与网页端」，点击「连接官方云端」后填写邮箱及密码进行注册或登录。注册需再次确认密码，登录后在「超级备忘录」使用同一账号的文字、图片与历史版本。网页端提供相同的注册和登录功能。邮箱是账号标识，本版未接入邮件验证码。
+
+超级备忘录支持自动保存、插入/粘贴 PNG、JPEG、GIF、WebP 图片、搜索、重命名、TXT 导入导出、回收站和历史回滚。每次写入、删除和回滚追加快照，回滚会创建新版本。桌面每 20 秒同步一次，或点击「立即同步」；离线期间的动作保存在本机，恢复连接后逐个上传。多端同时修改时保留冲突副本。图片最多 10 MB，每篇正文最多 2 MB。
+
+未登录的本机 TXT 与账号缓存分开保存。登录后点击「导入本机备忘录」可复制旧目录中的笔记及关联图片，原文件保留。账号缓存按服务地址和账号隔离。旧 TXT 的本机自动保存与外部编辑冲突检测继续保留。
+
+桌面「设置 → 可选功能加载」可勾选各项工具；网页「偏好设置」可勾选下载、课表和超级备忘录。保存后立即隐藏取消勾选的侧栏入口，并停止相关后台任务；下载会暂停，个人数据保留。全部关闭时仍可使用设置和账号。两端的功能选择分别保存。
+
+云端使用 Docker、MySQL 8.4 和 Nginx HTTPS。账号、图片、备忘录和动作快照持久保存在数据库；网页下载记录、课表和偏好也按账号隔离。密码使用随机盐及 PBKDF2-SHA256（600,000 次）哈希保存。邮箱会话有效期 12 小时，支持服务重启后恢复及退出撤销；桌面记住登录使用 Windows 本机加密，密码不保存。管理员后台支持账号启用、停用、重置密码与管理员密码修改。
+
+也可在设置中配置自有服务，或填写 `http://127.0.0.1:18765` 后启动本机网页服务。安装版支持 `Omini工具箱.exe --web --open`，源码支持 `Start-Omini-Web.cmd`。Docker 配置与数据备份见 [部署说明](deploy/README.md)，网页功能见 [Web 使用说明](web/README.md)。
+
+验证：`py -3.11 -m unittest tests.test_accounts tests.test_memos tests.test_desktop_settings tests.test_web_server -v`，`node tests/test_web_frontend.cjs`。
 
 ## 检查与安装更新
 
@@ -71,11 +83,11 @@ py -3.11 app.py
 
 ### Windows 安装版
 
-发布安装包位于 `dist-installer-1.1.8/Omini工具箱-1.1.8-Setup.exe`，GitHub 附件名为 `Omini-Toolbox-1.1.8-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+本地安装包位于 `dist-installer-1.2.0/Omini工具箱-1.2.0-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.0-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.1.8/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
+已有完整 `dist-sync-1.2.0/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -83,7 +95,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.1.8`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.0`。
 
 1.1.6 移除内置浏览器核心与随包 FFmpeg，备忘录替换为原生离线 TXT 笔记。网页统一使用系统浏览器；安装器继续采用 LZMA2 高压缩。构建脚本自动排除 `tools/` 中残留的 FFmpeg 文件，无需手动删除旧开发工具。覆盖升级会清理旧版安装目录中的浏览器运行库和 FFmpeg，个人数据目录保留。
 
@@ -143,9 +155,9 @@ M3U8 页签通过 yt-dlp 的 HLS 原生分片下载器获取播放列表，支�
 
 侧栏底部的「切换白天模式 / 切换黑夜模式」按钮点击后立即生效，选择自动保存，重启后恢复。按钮与设置页的深色 / 浅色选择保持同步，TXT 编辑器也随之切换。
 
-## 离线 TXT 笔记
+## 超级备忘录与旧 TXT 兼容
 
-侧栏「离线 TXT 笔记」直接读写本机 `.txt` 文件，支持新建、搜索文件名和正文、自动保存、Ctrl+S、重命名、另存为、导入 TXT 副本和切换笔记目录。导入支持 UTF-8、UTF-16 BOM 和 GB18030，导入副本与编辑结果统一保存为 UTF-8。每次保存通过临时文件原子替换；若文件被其他程序修改或移动，会保留当前编辑并提示另存为或重新读取。
+侧栏「超级备忘录」在本机兼容读写本机 `.txt` 文件，支持新建、搜索文件名和正文、自动保存、Ctrl+S、重命名、另存为、导入 TXT 副本和切换笔记目录。导入支持 UTF-8、UTF-16 BOM 和 GB18030，导入副本与编辑结果统一保存为 UTF-8。每次保存通过临时文件原子替换；若文件被其他程序修改或移动，会保留当前编辑并提示另存为或重新读取。
 
 默认目录 `%APPDATA%/Omini工具箱/text-notes/`，可在页面选择其他目录，也可用记事本打开。移除笔记会保留在当前目录 `.trash/` 中，恢复时把 TXT 移回上一级后点击「重新读取」。旧版 `icloud-notes.json` 加密缓存保留，不再加载云端页面。
 

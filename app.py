@@ -8,6 +8,11 @@ if __name__ == "__main__" and sys.argv[1:2] == ["--omini-api"]:
     from omini_api.runtime import main as run_omini_api
     raise SystemExit(run_omini_api(sys.argv[2:]))
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--web"]:
+    sys.argv.pop(1)
+    from web_server import main as run_web
+    raise SystemExit(run_web())
+
 import json
 import os
 import re
@@ -32,14 +37,9 @@ from PySide6.QtWidgets import (
     QStyle, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from campus_page import CampusPage
-from timetable_page import TimetablePage
-from text_notes_page import TextNotesPage
 from local_ffmpeg import resolve_ffmpeg
-from brightdata_page import BrightDataPage
-from folder_sync_page import FolderSyncPage
-from omini_api_page import OminiApiPage
-from ai_assistants_page import AiAssistantsPage
+from feature_config import DESKTOP_FEATURES, PAGE_FEATURES, enabled_features
+from account_panel import AccountPanel
 from updater_page import UpdatePanel
 from updater import launch_installer
 from app_version import APP_VERSION
@@ -643,6 +643,8 @@ class TaskManager(QObject):
         return LOG_DIR / f"{task_id}.log"
 
     def _start_waiting_locked(self) -> None:
+        if not enabled_features(self.settings)["downloads"]:
+            return
         maximum = max(1, int(self.settings.get("concurrency", 2)))
         running = len(self.workers)
         for task in reversed(self.tasks):
@@ -1178,6 +1180,17 @@ class SettingsPage(QWidget):
         content = QWidget(); scroll.setWidget(content); outer.addWidget(scroll)
         layout = QVBoxLayout(content); layout.setContentsMargins(32, 28, 32, 28)
         title = QLabel("设置"); title.setObjectName("pageTitle"); layout.addWidget(title)
+        self.before_save = None
+        self.account = AccountPanel(APP_DIR, settings, lambda value: save_json(SETTINGS_FILE, value), self)
+        layout.addWidget(self.account)
+        features_box = QGroupBox("可选功能加载"); features_layout = QVBoxLayout(features_box)
+        note = QLabel("勾选要使用的功能，点击「保存设置」后立即生效。取消勾选会隐藏侧栏入口并停止该功能的后台任务；下载会暂停，个人数据保留。设置和邮箱账号入口始终可用。")
+        note.setWordWrap(True); features_layout.addWidget(note)
+        self.feature_checks = {}
+        for key, label in DESKTOP_FEATURES.items():
+            check = QCheckBox(label); check.setChecked(enabled_features(settings)[key])
+            self.feature_checks[key] = check; features_layout.addWidget(check)
+        layout.addWidget(features_box)
         box = QGroupBox("下载设置"); form = QFormLayout(box)
         self.download_dir = FolderField(settings["download_dir"])
         self.concurrency = QSpinBox(); self.concurrency.setRange(1, 6); self.concurrency.setValue(settings["concurrency"])
@@ -1203,11 +1216,20 @@ class SettingsPage(QWidget):
         layout.addStretch()
 
     def save(self) -> None:
+        features = {key: check.isChecked() for key, check in self.feature_checks.items()}
+        if self.before_save and not self.before_save(features):
+            return
+        try:
+            self.account.selected_url()
+        except (ValueError, OSError) as error:
+            QMessageBox.warning(self, "网页服务地址有误", str(error))
+            return
         self.settings.update({"download_dir": self.download_dir.text(), "concurrency": self.concurrency.value(), "theme": self.theme.currentText(),
+                              "features": features,
                               "ffmpeg_path": self.ffmpeg_path.text().strip().strip('"')})
         save_json(SETTINGS_FILE, self.settings)
         self.settings_changed.emit(self.settings)
-        QMessageBox.information(self, "设置已保存", "新任务将使用更新后的默认下载目录与队列并发数。")
+        QMessageBox.information(self, "设置已保存", "功能加载与侧栏已更新，下载设置和主题已保存。")
 
     def choose_ffmpeg(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择本机 FFmpeg", self.ffmpeg_path.text(), "FFmpeg (ffmpeg.exe);;全部文件 (*)")
@@ -1243,9 +1265,10 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(resource_path("assets/omini_icon.ico"))))
         self.resize(1280, 860)
         self.setMinimumSize(980, 680)
+        self.quitting = False
         self._build_ui()
         previous_page = self.settings.get("last_page", 0)
-        if isinstance(previous_page, int) and 0 <= previous_page < self.nav.count():
+        if isinstance(previous_page, int) and 0 <= previous_page < self.nav.count() and not self.nav.item(previous_page).isHidden():
             self.nav.setCurrentRow(previous_page)
         self.apply_theme()
         self.quitting = False
@@ -1253,10 +1276,13 @@ class MainWindow(QMainWindow):
         self.tray.setToolTip(f"{APP_NAME} · 文件夹同步与校园网")
         menu = QMenu(self)
         menu.addAction("打开工具箱", self.restore_window)
-        menu.addAction("校园网立即登录", self.campus_page.manual_login)
-        menu.addAction("打开文件夹同步", self.open_folder_sync)
-        menu.addAction("打开 Omini API", self.open_omini_api)
-        menu.addAction("打开 AI 编程助手", self.open_ai_assistants)
+        self.feature_tray_actions = {
+            "campus": menu.addAction("校园网立即登录", self.login_campus),
+            "sync": menu.addAction("打开文件夹同步", self.open_folder_sync),
+            "omini_api": menu.addAction("打开 Omini API", self.open_omini_api),
+            "ai_assistants": menu.addAction("打开 AI 编程助手", self.open_ai_assistants),
+        }
+        for key, action in self.feature_tray_actions.items(): action.setVisible(enabled_features(self.settings)[key])
         menu.addSeparator()
         menu.addAction("退出工具箱", self.quit_from_tray)
         self.tray.setContextMenu(menu)
@@ -1287,10 +1313,12 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(24)
         self.nav = QListWidget(); self.nav.setObjectName("navigation")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  离线 TXT 笔记", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "◇  AI 编程助手", "＋  更多工具（敬请期待）"):
+        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  超级备忘录", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "◇  AI 编程助手", "＋  更多工具（敬请期待）"):
             item = QListWidgetItem(label); item.setSizeHint(item.sizeHint() + QSize(0, 12)); self.nav.addItem(item)
-        self.nav.setCurrentRow(0); self.nav.currentRowChanged.connect(self.change_page)
         side_layout.addWidget(self.nav, 1)
+        self.account_button = QPushButton("✉  邮箱注册 / 登录")
+        self.account_button.clicked.connect(self.open_account)
+        side_layout.addWidget(self.account_button)
         self.theme_button = QPushButton()
         self.theme_button.setObjectName("themeToggle")
         self.theme_button.setAccessibleName("切换白天黑夜模式")
@@ -1300,41 +1328,144 @@ class MainWindow(QMainWindow):
         tip = QLabel("下载引擎在本地运行\nCookie 按任务临时使用")
         tip.setObjectName("muted"); tip.setWordWrap(True); side_layout.addWidget(tip)
         layout.addWidget(sidebar)
-        self.stack = QStackedWidget(); self.download_page = DownloadPage(self.manager, self.settings); self.stack.addWidget(self.download_page)
-        self.campus_page = CampusPage(self.settings, lambda value: save_json(SETTINGS_FILE, value), self)
-        self.stack.addWidget(self.campus_page)
-        self.timetable_page = TimetablePage(self.settings, lambda value: save_json(SETTINGS_FILE, value),
-                                            APP_DIR / "school-timetable.json",
-                                            lambda value: save_json(APP_DIR / "school-timetable.json", value), self)
-        self.stack.addWidget(self.timetable_page)
-        self.notes_page = TextNotesPage(APP_DIR / "text-notes.json", self)
-        self.stack.addWidget(self.notes_page)
-        self.settings_page = SettingsPage(self.settings); self.settings_page.settings_changed.connect(self.on_settings_changed); self.stack.addWidget(self.settings_page)
+        self.stack = QStackedWidget()
+        self.retired_pages = []
+        for feature in PAGE_FEATURES:
+            self.stack.addWidget(QWidget())
+            if feature:
+                setattr(self, self.page_attribute(feature), None)
+        self.settings_page = SettingsPage(self.settings)
+        self.settings_page.account.account_changed.connect(self.update_account_label)
+        self.settings_page.account.before_account_change = self.prepare_account_switch
+        self.settings_page.before_save = self.prepare_features
+        self.settings_page.settings_changed.connect(self.on_settings_changed)
+        self.replace_page(4, self.settings_page)
         self.settings_page.updates.install_requested.connect(self.install_update)
-        self.brightdata_page = BrightDataPage(APP_DIR / "brightdata.json", self)
-        self.stack.addWidget(self.brightdata_page)
-        self.sync_page = FolderSyncPage(APP_DIR / "sync", self)
-        self.stack.addWidget(self.sync_page)
-        self.omini_api_page = OminiApiPage(self.settings, lambda value: save_json(SETTINGS_FILE, value), self)
-        self.stack.addWidget(self.omini_api_page)
-        self.ai_assistants_page = AiAssistantsPage(APP_DIR / "ai-assistants", self)
-        self.stack.addWidget(self.ai_assistants_page)
-        placeholder = QLabel("更多工具正在规划中")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stack.addWidget(placeholder)
+        self.apply_features(select=False)
+        self.nav.currentRowChanged.connect(self.change_page)
+        selected = self.settings.get("last_page", 0)
+        if type(selected) is not int or not 0 <= selected < self.nav.count() or self.nav.item(selected).isHidden():
+            selected = next(i for i in range(self.nav.count()) if not self.nav.item(i).isHidden())
+        self.nav.setCurrentRow(selected)
         layout.addWidget(self.stack, 1)
-        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 离线 TXT 笔记 · Bright Data · 文件夹同步 · Omini API · AI 编程助手")); self.menuBar().addAction(about)
+        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 超级备忘录 · Bright Data · 文件夹同步 · Omini API · AI 编程助手")); self.menuBar().addAction(about)
+
+    @staticmethod
+    def page_attribute(feature):
+        return "download_page" if feature == "downloads" else feature + "_page"
+
+    def replace_page(self, index, page):
+        previous = self.stack.widget(index)
+        self.stack.removeWidget(previous)
+        self.stack.insertWidget(index, page)
+        previous.deleteLater()
+
+    def create_feature_page(self, feature):
+        save = lambda value: save_json(SETTINGS_FILE, value)
+        if feature == "downloads": return DownloadPage(self.manager, self.settings)
+        if feature == "campus":
+            from campus_page import CampusPage
+            return CampusPage(self.settings, save, self)
+        if feature == "timetable":
+            from timetable_page import TimetablePage
+            return TimetablePage(self.settings, save, APP_DIR / "school-timetable.json",
+                                 lambda value: save_json(APP_DIR / "school-timetable.json", value), self)
+        if feature == "notes":
+            from text_notes_page import TextNotesPage
+            return TextNotesPage(APP_DIR / "text-notes.json", self, account=self.settings_page.account)
+        if feature == "brightdata":
+            from brightdata_page import BrightDataPage
+            return BrightDataPage(APP_DIR / "brightdata.json", self)
+        if feature == "sync":
+            from folder_sync_page import FolderSyncPage
+            return FolderSyncPage(APP_DIR / "sync", self)
+        if feature == "omini_api":
+            from omini_api_page import OminiApiPage
+            return OminiApiPage(self.settings, save, self)
+        if feature == "ai_assistants":
+            from ai_assistants_page import AiAssistantsPage
+            return AiAssistantsPage(APP_DIR / "ai-assistants", self)
+        page = QLabel("更多工具正在规划中"); page.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return page
+
+    def prepare_features(self, features):
+        if self.notes_page and not features["notes"] and not self.notes_page.flush():
+            QMessageBox.warning(self, "超级备忘录尚未保存", "请先保存当前笔记，再关闭此功能。")
+            return False
+        return True
+
+    def apply_features(self, select=True):
+        features = enabled_features(self.settings)
+        for index, feature in enumerate(PAGE_FEATURES):
+            if feature is None: continue
+            enabled = features[feature]
+            self.nav.item(index).setHidden(not enabled)
+            attribute = self.page_attribute(feature)
+            page = getattr(self, attribute)
+            if enabled and page is None:
+                if any(getattr(old, "feature_key", None) == feature and getattr(old, "worker", None)
+                       and old.worker.isRunning() for old in self.retired_pages):
+                    QTimer.singleShot(100, self.reload_features)
+                    continue
+                page = self.create_feature_page(feature)
+                self.replace_page(index, page)
+                setattr(self, attribute, page)
+            elif not enabled and page is not None:
+                if feature == "downloads":
+                    for task in self.manager.tasks:
+                        if task.status in {"running", "queued"}: self.manager.pause(task.id)
+                if hasattr(page, "stop"): page.stop()
+                self.stack.removeWidget(page)
+                loading = QLabel("功能已关闭；重新勾选后加载。")
+                loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.stack.insertWidget(index, loading)
+                page.feature_key = feature
+                self.retired_pages.append(page)
+                setattr(self, attribute, None)
+        for key, action in getattr(self, "feature_tray_actions", {}).items(): action.setVisible(features[key])
+        if self.retired_pages: QTimer.singleShot(50, self.reap_pages)
+        if select:
+            current = self.nav.currentRow()
+            if current < 0 or self.nav.item(current).isHidden():
+                self.nav.setCurrentRow(4)
+            else:
+                self.change_page(current)
+
+    def reload_features(self):
+        if not self.quitting: self.apply_features()
+
+    def reap_pages(self):
+        for page in self.retired_pages[:]:
+            worker = getattr(page, "worker", None)
+            if worker and worker.isRunning(): continue
+            self.retired_pages.remove(page); page.deleteLater()
+        if self.retired_pages: QTimer.singleShot(100, self.reap_pages)
+
+    def open_account(self):
+        self.nav.setCurrentRow(4)
+        self.settings_page.findChild(QScrollArea).ensureWidgetVisible(self.settings_page.account)
+        self.settings_page.account.email.setFocus()
+
+    def update_account_label(self, user):
+        self.account_button.setText("✉  " + user["email"] if user else "✉  邮箱注册 / 登录")
+        self.account_button.setToolTip(user["email"] if user else "打开账号注册、登录及同步设置")
+
+    def prepare_account_switch(self):
+        return not self.notes_page or self.notes_page.flush()
+
+    def login_campus(self):
+        if self.campus_page: self.campus_page.manual_login()
 
     def open_ai_assistants(self) -> None:
-        self.nav.setCurrentRow(8)
+        self.nav.setCurrentRow(8 if self.ai_assistants_page else 4)
         self.restore_window()
 
     def open_omini_api(self) -> None:
-        self.nav.setCurrentRow(7)
+        self.nav.setCurrentRow(7 if self.omini_api_page else 4)
         self.restore_window()
 
     def open_folder_sync(self) -> None:
-        self.nav.setCurrentRow(6)
+        self.nav.setCurrentRow(6 if self.sync_page else 4)
         self.restore_window()
 
     def install_update(self, artifact) -> None:
@@ -1352,16 +1483,21 @@ class MainWindow(QMainWindow):
         self.close()
 
     def change_page(self, index: int) -> None:
+        if not 0 <= index < self.nav.count(): return
+        if self.nav.item(index).isHidden():
+            self.nav.setCurrentRow(4)
+            return
         self.stack.setCurrentIndex(index)
         self.settings["last_page"] = index
         save_json(SETTINGS_FILE, self.settings)
-        if hasattr(self, "ai_assistants_page"):
+        if getattr(self, "ai_assistants_page", None):
             self.ai_assistants_page.report("打开工具：" + self.nav.item(index).text().strip(), "navigation")
-        if hasattr(self, "omini_api_page") and self.stack.currentWidget() is self.omini_api_page:
+        if getattr(self, "omini_api_page", None) and self.stack.currentWidget() is self.omini_api_page:
             self.omini_api_page.ensure_started()
 
     def on_settings_changed(self, settings: dict[str, Any]) -> None:
         self.manager.settings = settings
+        self.apply_features()
         self.apply_theme()
 
     def toggle_theme(self) -> None:
@@ -1389,8 +1525,8 @@ class MainWindow(QMainWindow):
         }.items():
             palette.setColor(role, QColor(color))
         QApplication.instance().setPalette(palette)
-        self.notes_page.apply_theme(dark)
-        self.omini_api_page.apply_theme(dark)
+        if self.notes_page: self.notes_page.apply_theme(dark)
+        if self.omini_api_page: self.omini_api_page.apply_theme(dark)
         if dark:
             self.setStyleSheet("""
                 QWidget { background: #111827; color: #e5e7eb; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
@@ -1427,7 +1563,9 @@ class MainWindow(QMainWindow):
             """)
 
     def closeEvent(self, event: Any) -> None:
-        if not self.quitting and (self.campus_page.config.get("background", False) or self.sync_page.background_enabled or self.ai_assistants_page.wants_background) and QSystemTrayIcon.isSystemTrayAvailable():
+        if not self.quitting and (bool(self.campus_page and self.campus_page.config.get("background", False)) or
+                                  bool(self.sync_page and self.sync_page.background_enabled) or
+                                  bool(self.ai_assistants_page and self.ai_assistants_page.wants_background)) and QSystemTrayIcon.isSystemTrayAvailable():
             self.hide()
             self.tray.showMessage(APP_NAME, "已在托盘后台运行，右键托盘图标可退出。")
             event.ignore(); return
@@ -1441,20 +1579,18 @@ class MainWindow(QMainWindow):
             for task_id in list(self.manager.workers):
                 self.manager.pause(task_id)
                 self.manager.workers[task_id].wait(4000)
-        if not self.notes_page.flush():
-            answer = QMessageBox.question(self, "TXT 笔记尚未保存", "TXT 保存失败。仍要退出并放弃未保存的编辑吗？")
+        if self.notes_page and not self.notes_page.flush():
+            answer = QMessageBox.question(self, "超级备忘录尚未保存", "TXT 保存失败。仍要退出并放弃未保存的编辑吗？")
             if answer != QMessageBox.StandardButton.Yes:
                 self.quitting = False; self.pending_update = None; event.ignore(); return
-        self.campus_page.stop()
-        self.timetable_page.stop()
-        self.notes_page.stop()
-        self.brightdata_page.stop()
-        self.sync_page.stop()
-        self.omini_api_page.stop()
-        self.ai_assistants_page.stop()
+        pages = [getattr(self, self.page_attribute(feature)) for feature in PAGE_FEATURES if feature]
+        pages = [page for page in pages if page is not None] + self.retired_pages[:]
+        for page in pages:
+            if hasattr(page, "stop"): page.stop()
+        self.settings_page.account.stop()
         self.settings_page.updates.stop()
-        pending = [page.worker for page in (self.campus_page, self.timetable_page, self.notes_page, self.brightdata_page, self.sync_page, self.ai_assistants_page)
-                   if page.worker and page.worker.isRunning()]
+        pending = [page.worker for page in pages + [self.settings_page.account]
+                   if getattr(page, "worker", None) and page.worker.isRunning()]
         update_worker = self.settings_page.updates.worker
         if update_worker and update_worker.isRunning():
             pending.append(update_worker)
@@ -1486,6 +1622,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--self-test-settings" in sys.argv:
+        from settings_self_test import run_settings_test
+        sys.exit(run_settings_test(sys.modules[__name__]))
     if "--self-test-ai-assistants" in sys.argv:
         from ai_assistants_self_test import run_ai_assistants_test
         sys.exit(run_ai_assistants_test(sys.modules[__name__]))

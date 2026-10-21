@@ -15,8 +15,10 @@ const intervals = [];
 const timers = [];
 let exported = false;
 let failImport = false;
+let failLogin = false;
+const authState = {authenticated:true,user:{id:'fixture-user',email:'member@example.test'},access_password_required:false};
 const fixtureTask = {id:'fixture-task',type:'file',source:'https://example.test/file.bin',title:'Sample file',status:'queued',progress:0,speed:'—',eta:'—',error:''};
-const state = {version:'1.2.0-web',tasks:[],download_dir:'C:/Omini/downloads',engines:{'yt-dlp':true,aria2c:true,ffmpeg:true,'gallery-dl':false,spotdl:true},concurrency:2};
+const state = {version:'1.2.0-web',tasks:[],download_dir:'C:/Omini/downloads',engines:{'yt-dlp':true,aria2c:true,ffmpeg:true,'gallery-dl':false,spotdl:true},concurrency:2,features:{downloads:true,timetable:true}};
 const stored = new Map();
 const scheduleData = {schedule:null,first_monday:''};
 for (const dialog of document.querySelectorAll('dialog')) {
@@ -26,6 +28,9 @@ for (const dialog of document.querySelectorAll('dialog')) {
 // linkedom doesn't implement the standard select.value setter or file inputs.
 for (const select of document.querySelectorAll('select')) {
   Object.defineProperty(select, 'value', {value:select.querySelector('option')?.getAttribute('value') || select.querySelector('option')?.textContent || '', writable:true});
+}
+for (const checkbox of document.querySelectorAll('input[type="checkbox"]')) {
+  Object.defineProperty(checkbox,'checked',{value:checkbox.hasAttribute('checked'),writable:true});
 }
 document.hidden = false;
 window.open = () => {};
@@ -39,10 +44,16 @@ const context = vm.createContext({
     const data=options.body ? JSON.parse(options.body) : null;
     requests.push({url,data});
     let status=200, result={ok:true};
-    if(url==='/api/state')result=state;
+    if(url==='/api/auth/session')result=authState;
+    else if(url==='/api/auth/logout'){authState.authenticated=false;authState.user=null;}
+    else if(['/api/auth/login','/api/auth/register','/api/login'].includes(url)){
+      if(failLogin){status=401;result={error:'邮箱或密码不正确。'};}
+      else{authState.authenticated=true;authState.user={id:'fixture-user',email:(data.email||'member@example.test').trim().toLowerCase()};result={user:authState.user};}
+    }
+    else if(url==='/api/state')result=state;
     else if(url==='/api/timetable')result=scheduleData;
     else if(url==='/api/tasks'){state.tasks.unshift({...fixtureTask});result={task:fixtureTask};}
-    else if(url==='/api/settings')state.concurrency=data.concurrency;
+    else if(url==='/api/settings'){state.concurrency=data.concurrency;state.features={...state.features,...data.features};result={ok:true,features:state.features};}
     else if(url==='/api/timetable/import'){
       if(failImport){status=400;result={error:'测试导入失败'};}
       else{scheduleData.schedule=JSON.parse(data.content);result=scheduleData;}
@@ -73,6 +84,8 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal(document.querySelectorAll('#engine-list .engine-row').length,5);
     assert.equal($('#page-timetable').hidden,true);
     assert.equal($('#submit-download').disabled,false);
+    assert.equal($('#account-label').textContent,'member@example.test');
+    assert.equal(requests.some(r=>r.url==='/api/timetable'),false);
     console.log('PASS initial render, service status, engines and empty queue');
 
     click('#mobile-theme');assert.equal(document.documentElement.dataset.theme,'dark');
@@ -130,6 +143,42 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal(run('timetable.courses.length'),3);assert.match($('#import-status').textContent,/测试导入失败/);
     $('#school-cookie').value='TEST_SESSION';$('#online-dialog').close();assert.equal($('#school-cookie').value,'');
     console.log('PASS import/export, failed import preserves timetable and closing clears session input');
+
+    click('#settings-open');$('#feature-timetable').checked=false;submit('#settings-form');await tick();
+    assert.equal($('[data-page="timetable"]').hidden,true);assert.equal($('.timetable-shortcut').hidden,true);
+    assert.equal($('#page-downloads').hidden,false);assert.equal($('#page-timetable').hidden,true);
+    run('location.hash="#timetable";route()');assert.equal($('#page-timetable').hidden,true);
+    click('#settings-open');$('#feature-downloads').checked=false;$('#feature-notes').checked=false;submit('#settings-form');await tick();
+    assert.equal($('#page-workspace').hidden,false);assert.equal($('[data-page="downloads"]').hidden,true);
+    assert.equal($('#submit-download').disabled,true);
+    click('#choose-features');assert.equal($('#settings-dialog').open,true);
+    $('#feature-timetable').checked=true;submit('#settings-form');await tick();
+    assert.equal($('#page-timetable').hidden,false);assert.equal($('[data-page="timetable"]').hidden,false);
+    const scheduleReads=requests.filter(r=>r.url==='/api/timetable').length;
+    await run('refreshTasks()');await tick();
+    assert.equal(requests.filter(r=>r.url==='/api/timetable').length,scheduleReads);
+    console.log('PASS optional features hide navigation, guard routes, keep settings reachable and load timetable on demand');
+
+    click('#account-open');assert.equal($('#settings-dialog').open,true);click('#account-logout');await tick();
+    assert.equal($('#login-dialog').open,true);assert.equal($('#settings-dialog').open,false);
+    assert.equal(run('tasks.length'),0);assert.equal(run('timetable'),null);
+    assert.equal($('#account-label').textContent,'邮箱登录 / 注册');
+    const beforeRegistration=requests.filter(r=>r.url==='/api/auth/register').length;
+    click('[data-auth-mode="register"]');assert.equal($('#confirm-fields').hidden,false);
+    $('#account-email').value='new@example.test';$('#account-password').value='password-123';$('#account-confirm').value='different';
+    submit('#login-form');await tick();assert.match($('#login-error').textContent,/不一致/);
+    assert.equal(requests.filter(r=>r.url==='/api/auth/register').length,beforeRegistration);
+    $('#account-confirm').value='password-123';submit('#login-form');await tick();
+    assert.equal($('#login-dialog').open,false);assert.equal($('#account-password').value,'');assert.equal($('#account-confirm').value,'');
+    assert.equal($('#account-label').textContent,'new@example.test');
+    click('#account-open');click('#account-logout');await tick();click('[data-auth-mode="login"]');
+    failLogin=true;$('#account-email').value='member@example.test';$('#account-password').value='wrong-password';submit('#login-form');await tick();
+    assert.equal($('#login-dialog').open,true);assert.match($('#login-error').textContent,/邮箱或密码/);
+    failLogin=false;$('#account-password').value='password-123';submit('#login-form');await tick();
+    assert.equal($('#login-dialog').open,false);assert.equal($('#settings-account').textContent,'member@example.test');
+    run('setAuth({...auth,access_password_required:true});setAuthMode("access")');
+    assert.equal($('#email-fields').hidden,true);assert.equal($('#access-fields').hidden,false);assert.equal($('#account-email').required,false);
+    console.log('PASS email registration/login/logout, confirmation, failed login and private view reset');
   } finally { timers.forEach(clearTimeout); }
 })().catch(error=>{console.error(error);process.exitCode=1;});
 

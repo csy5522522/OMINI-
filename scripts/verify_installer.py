@@ -104,6 +104,10 @@ def main():
             legacy_cache = notes_root / "icloud-notes.json"
             legacy_cache.write_text('legacy-encrypted-cache-sentinel', encoding='utf-8')
             report["installed_txt_smoke"] = True
+            run([str(app), "--self-test-settings"], environment)
+            settings_report = json.loads((root / f"verification/settings-self-test-{version}.json").read_text(encoding="utf-8"))
+            assert settings_report.get("ok") and settings_report.get("memo_images_sync_and_rollback")
+            report["installed_account_memos_smoke"] = True
             api_environment = environment.copy()
             api_environment.pop("QT_QPA_PLATFORM", None)
             api_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "api-check.json")

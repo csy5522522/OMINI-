@@ -36,6 +36,10 @@ temp/
 .env
 .env.*
 !.env.example
+/deploy/secrets/
+*.sqlite3
+*.sqlite3-*
+*.sql.gz
 
 # OS-generated files
 .DS_Store

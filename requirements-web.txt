@@ -1,0 +1,6 @@
+PySide6-Essentials==6.8.3
+requests[socks]>=2.32,<3
+Pillow>=11.1,<13
+PyMySQL[rsa]>=1.1,<2
+gallery-dl>=1.29,<2
+yt-dlp>=2026.1.1

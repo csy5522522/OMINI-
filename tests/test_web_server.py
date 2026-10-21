@@ -55,7 +55,8 @@ class WebServerTests(unittest.TestCase):
     @classmethod
     def start(cls):
         env = os.environ.copy()
-        env.update(PYTHONIOENCODING="utf-8", OMINI_WEB_PASSWORD="OminiTestOnly-123456")
+        access_password = getattr(cls, "access_password", "OminiTestOnly-123456")
+        env.update(PYTHONIOENCODING="utf-8", OMINI_WEB_PASSWORD=access_password)
         cls.process = subprocess.Popen(
             [sys.executable, str(ROOT / "web_server.py"), "--port", "0", "--data-dir", str(cls.data), "--download-dir", str(cls.downloads)],
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -76,8 +77,9 @@ class WebServerTests(unittest.TestCase):
             raise RuntimeError("Web service did not start: " + "".join(lines))
         cls.session = requests.Session()
         cls.session.trust_env = False
-        response = cls.session.post(cls.url + "/api/login", json={"password": "OminiTestOnly-123456"}, headers={"X-Omini-Client": "web"}, timeout=5)
-        assert response.status_code == 200, response.text
+        if access_password:
+            response = cls.session.post(cls.url + "/api/login", json={"password": access_password}, headers={"X-Omini-Client": "web"}, timeout=5)
+            assert response.status_code == 200, response.text
 
     @classmethod
     def stop(cls):
@@ -174,9 +176,9 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.get("/api/timetable").json()["first_monday"], "2026-09-07")
         for file in self.data.rglob("*"):
             if file.is_file():
-                raw = file.read_text(encoding="utf-8")
-                self.assertNotIn("PRIVATE_STUDENT", raw)
-                self.assertNotIn("PRIVATE_COOKIE", raw)
+                raw = file.read_bytes()
+                self.assertNotIn(b"PRIVATE_STUDENT", raw)
+                self.assertNotIn(b"PRIVATE_COOKIE", raw)
         self.assertEqual(self.post("/api/timetable/import", {"content": "{}"}).status_code, 400)
         self.assertEqual(self.get("/api/timetable").json()["schedule"]["courses"], schedule["courses"])
 
@@ -196,6 +198,104 @@ class WebServerTests(unittest.TestCase):
         type(self).start()
         self.assertEqual(self.get("/api/state").json()["tasks"], before)
         self.assertEqual(self.get("/api/timetable").json(), schedule)
+
+    def test_07_email_registration_respects_service_password(self):
+        value = {"email": "member@example.test", "password": "EmailPassword-123"}
+        with requests.Session() as client:
+            client.trust_env = False
+            url = self.url + "/api/auth/register"
+            headers = {"X-Omini-Client": "desktop"}
+            self.assertEqual(client.post(url, json=value, headers=headers, timeout=5).status_code, 401)
+            response = client.post(url, json={**value, "access_password": "OminiTestOnly-123456"}, headers=headers, timeout=5)
+            self.assertEqual(response.status_code, 201, response.text)
+            session = client.get(self.url + "/api/auth/session", timeout=5).json()
+            self.assertEqual(session["user"]["email"], value["email"])
+            self.assertTrue(session["access_password_required"])
+
+
+class EmailWebTests(unittest.TestCase):
+    access_password = ""
+    start = classmethod(WebServerTests.start.__func__)
+    stop = classmethod(WebServerTests.stop.__func__)
+    get = WebServerTests.get
+    post = WebServerTests.post
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.data = Path(cls.temp.name) / "data"
+        cls.downloads = Path(cls.temp.name) / "downloads"
+        cls.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop(); cls.temp.cleanup()
+
+    def test_01_local_service_requires_email_session(self):
+        self.assertEqual(self.get("/").status_code, 200)
+        self.assertEqual(self.get("/api/state").status_code, 401)
+        self.assertEqual(self.post("/api/login", {"password": ""}).status_code, 401)
+        self.assertFalse(self.get("/api/auth/session").json()["authenticated"])
+
+    def test_02_register_login_rotate_and_logout(self):
+        credentials = {"email": " Member@Example.test ", "password": "EmailPassword-123"}
+        for value in ({**credentials, "email": "bad email"}, {**credentials, "password": "short"}):
+            self.assertEqual(self.post("/api/auth/register", value).status_code, 400)
+        response = self.post("/api/auth/register", credentials)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["user"]["email"], "member@example.test")
+        self.assertNotIn("password", response.text)
+        self.assertIn("HttpOnly", response.headers["Set-Cookie"])
+        token = self.session.cookies["omini_session"]
+        self.assertEqual(self.get("/api/state").status_code, 200)
+        self.assertEqual(self.post("/api/auth/register", credentials).status_code, 400)
+        self.assertEqual(self.post("/api/auth/login", {**credentials, "password": "incorrect-password"}).status_code, 401)
+        self.assertEqual(self.post("/api/auth/login", credentials).status_code, 200)
+        self.assertEqual(self.get("/api/state", headers={"Cookie": "omini_session=" + token}).status_code, 401)
+        token = self.session.cookies["omini_session"]
+        self.assertEqual(self.post("/api/auth/logout", {}).status_code, 200)
+        self.assertEqual(self.get("/api/state", headers={"Cookie": "omini_session=" + token}).status_code, 401)
+        self.assertEqual(self.post("/api/auth/login", credentials).status_code, 200)
+        self.assertNotIn(credentials["password"].encode(), (self.data / "accounts.sqlite3").read_bytes())
+
+    def test_03_browser_and_desktop_use_same_durable_accounts(self):
+        from account_client import AccountClient
+        token = self.session.cookies["omini_session"]
+        type(self).stop(); type(self).start()
+        self.session.cookies.set("omini_session", token)
+        self.assertEqual(self.get("/api/auth/session").json()["user"]["email"], "member@example.test")
+        client = AccountClient(self.url)
+        response = client.request("login", {"email": "member@example.test", "password": "EmailPassword-123"})
+        self.assertEqual(response["user"]["email"], "member@example.test")
+        self.assertTrue(client.request("session")["authenticated"])
+        desktop_token = client.token
+        client.request("logout", {})
+        self.assertFalse(AccountClient(self.url, desktop_token).request("session")["authenticated"])
+        self.assertEqual(self.get("/api/state").status_code, 200)
+
+    def test_04_optional_features_persist_and_reenable(self):
+        response = self.post("/api/settings", {"features": {"downloads": False, "timetable": False}})
+        self.assertEqual(response.status_code, 200, response.text)
+        state = self.get("/api/state").json()
+        self.assertEqual(state["features"], {"downloads": False, "timetable": False, "notes": True})
+        self.assertEqual(state["tasks"], []); self.assertEqual(state["engines"], {})
+        self.assertEqual(self.get("/api/timetable").status_code, 403)
+        self.assertEqual(self.post("/api/tasks", {"type": "file", "source": "https://example.test/a"}).status_code, 403)
+        for features in ([], {"bad": True}, {"timetable": "false"}, {"downloads": 1}):
+            self.assertEqual(self.post("/api/settings", {"features": features}).status_code, 400)
+        token = self.session.cookies["omini_session"]
+        type(self).stop(); type(self).start(); self.session.cookies.set("omini_session", token)
+        self.assertEqual(self.get("/api/state").json()["features"], state["features"])
+        self.assertEqual(self.post("/api/settings", {"features": {"timetable": True}}).status_code, 200)
+        self.assertEqual(self.get("/api/timetable").status_code, 200)
+        self.assertFalse(self.get("/api/state").json()["features"]["downloads"])
+        self.post("/api/settings", {"features": {"downloads": True}})
+
+    def test_05_login_throttling(self):
+        type(self).stop(); type(self).start()
+        for _ in range(10):
+            self.assertEqual(self.post("/api/auth/login", {"email": "missing@example.test", "password": "incorrect-password"}).status_code, 401)
+        self.assertEqual(self.post("/api/auth/login", {"email": "missing@example.test", "password": "incorrect-password"}).status_code, 429)
 
 
 if __name__ == "__main__":

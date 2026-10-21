@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
+from memo_store import MemoStore
 
 
 MAX_NOTE_BYTES = 16 * 1024 * 1024
@@ -45,6 +46,53 @@ class TextNotesStore:
     def __init__(self, directory: Path):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.memos = MemoStore(self.directory / ".omini-memos.sqlite3")
+        self.owner = "local"
+
+    def mapping(self):
+        return self.memos.get_data(self.owner, "paths", {})
+
+    def record(self, path, action="edit", deleted=False):
+        mapping = self.mapping()
+        memo_id = next((key for key, name in mapping.items() if name == path.name), None)
+        if memo_id:
+            old = self.memos.get(self.owner, memo_id)
+        else:
+            memo_id = uuid.uuid4().hex; old = {"version": 0}
+        text, _ = read_text_file(path)
+        memo = self.memos.save(self.owner, {"id": memo_id, "title": path.stem, "content": text,
+            "base_version": old["version"], "deleted": deleted}, action=action, device="desktop")
+        mapping[memo_id] = path.name
+        self.memos.set_data(self.owner, "paths", mapping)
+        return memo
+
+    def for_path(self, path):
+        mapping = self.mapping()
+        memo_id = next((key for key, name in mapping.items() if name == path.name), None)
+        return self.memos.get(self.owner, memo_id) if memo_id else self.record(path, "import")
+
+    def write_snapshot(self, value, action="sync"):
+        mapping = self.mapping()
+        path = self.directory / mapping[value["id"]] if value["id"] in mapping else self.target(value["title"])
+        desired = self.target(value["title"])
+        if value["id"] in mapping and desired != path and not desired.exists():
+            if path.exists(): path.rename(desired)
+            path = desired
+        if value["id"] not in mapping:
+            occupied = set(mapping.values())
+            if path.name in occupied or path.exists(): path = self.target(value["title"] + " " + value["id"][:8])
+        try: old = self.memos.get(self.owner, value["id"])
+        except ValueError: old = {"version": 0}
+        result = self.memos.save(self.owner, {**value, "deleted": bool(value["deleted"]), "base_version": old["version"]}, action=action, device="sync")
+        if value["deleted"]:
+            if path.exists():
+                trash = self.directory / ".trash"; trash.mkdir(exist_ok=True)
+                path.rename(trash / (path.stem + "-" + uuid.uuid4().hex[:8] + ".txt"))
+        else: atomic_text(path, value["content"])
+        if value["deleted"]: mapping.pop(value["id"], None)
+        else: mapping[value["id"]] = path.name
+        self.memos.set_data(self.owner, "paths", mapping)
+        return result, path
 
     def files(self) -> list[Path]:
         return sorted((p for p in self.directory.iterdir() if p.is_file() and p.suffix.lower() == ".txt"),
@@ -66,17 +114,30 @@ class TextNotesStore:
         # Exclusive create also guards against collisions with an external editor.
         with path.open("x", encoding="utf-8", newline="") as stream:
             stream.write(text)
+        self.record(path, "create")
         return path
 
     def save(self, path: Path, text: str, expected_digest: str) -> str:
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
             raise ValueError("文件已被其他程序修改或移动。请先「另存为」保留编辑，或「重新读取」加载磁盘内容。")
+        self.for_path(path)
         atomic_text(path, text)
+        self.record(path)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def trash(self, path: Path) -> Path:
+        memo = self.record(path, "delete", deleted=True)
         directory = self.directory / ".trash"
         directory.mkdir(exist_ok=True)
         destination = directory / f"{path.stem}-{uuid.uuid4().hex[:8]}.txt"
         path.rename(destination)
+        mapping = self.mapping(); mapping.pop(memo["id"], None)
+        self.memos.set_data(self.owner, "paths", mapping)
         return destination
+
+    def rename(self, path, target):
+        memo = self.for_path(path)
+        path.rename(target)
+        mapping = self.mapping(); mapping[memo["id"]] = target.name
+        self.memos.set_data(self.owner, "paths", mapping)
+        self.record(target, "rename")

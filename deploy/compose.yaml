@@ -1,0 +1,56 @@
+name: omini-toolbox
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: omini
+      MYSQL_USER: omini
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets: [mysql_password, mysql_root_password]
+    volumes: [mysql_data:/var/lib/mysql]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--max-allowed-packet=32M"]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$(cat /run/secrets/mysql_password) mysql -h 127.0.0.1 -u omini -D omini -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    mem_limit: 768m
+  web:
+    build: ..
+    image: omini-toolbox:1.2.0
+    restart: unless-stopped
+    init: true
+    ports: ["127.0.0.1:18765:18765"]
+    environment:
+      OMINI_PUBLIC_ORIGIN: ${OMINI_PUBLIC_ORIGIN:-https://my.omini.cn}
+      OMINI_MYSQL_HOST: mysql
+      OMINI_MYSQL_USER: omini
+      OMINI_MYSQL_DATABASE: omini
+      OMINI_MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      OMINI_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets: [mysql_password, admin_password]
+    volumes: [web_data:/data, downloads:/downloads]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; r=requests.get('http://127.0.0.1:18765/api/auth/session',timeout=5);r.raise_for_status()"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+    mem_limit: 768m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+secrets:
+  mysql_password:
+    file: ./secrets/mysql_password
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+  admin_password:
+    file: ./secrets/admin_password
+volumes:
+  mysql_data:
+  web_data:
+  downloads:

@@ -1,6 +1,7 @@
 """Install, upgrade, launch and uninstall the exact Setup EXE in an isolated folder."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -13,11 +14,12 @@ import uuid
 import winreg
 
 APP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{87C65C31-3F6B-4D75-A698-ED691D22FA37}_is1"
+VERIFICATION_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{7E2C2E2F-5237-43BE-B64A-AC0A193146B8}_is1"
 
 
-def uninstall_entry():
+def uninstall_entry(app_key=APP_KEY):
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, APP_KEY) as key:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, app_key) as key:
             return {name: winreg.QueryValueEx(key, name)[0] for name in
                     ("DisplayName", "DisplayVersion", "InstallLocation", "UninstallString")}
     except FileNotFoundError:
@@ -36,11 +38,18 @@ def run(command, environment=None):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("installer", type=Path)
+    parser.add_argument("--isolated-registration", action="store_true",
+                        help="Use the installer's separate verification AppId, preserving existing installations")
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    setup = Path(sys.argv[1]).resolve()
+    setup = args.installer.resolve()
     assert setup.is_file()
     version = re.search(r"(\d+\.\d+\.\d+)-Setup\.exe$", setup.name)[1]
-    if uninstall_entry():
+    app_key = VERIFICATION_KEY if args.isolated_registration else APP_KEY
+    original_installation = uninstall_entry()
+    if uninstall_entry(app_key):
         raise RuntimeError("A user installation already exists; verification stopped before changing it.")
     report = {"installer": str(setup)}
     with tempfile.TemporaryDirectory(prefix="omini-installer-verification-") as directory:
@@ -66,9 +75,11 @@ def main():
         try:
             command = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/TASKS=",
                        f"/DIR={target}", f"/GROUP={group}", f"/LOG={root / 'verification/installer-install.log'}"]
+            if args.isolated_registration:
+                command.extend(["/OMINIVERIFY=1", "/NOCLOSEAPPLICATIONS"])
             run(command, environment)
             installed = True
-            entry = uninstall_entry()
+            entry = uninstall_entry(app_key)
             assert entry and Path(entry["InstallLocation"]).resolve() == target.resolve()
             report["installed_app_registration"] = entry["DisplayName"] == "Omini工具箱" and entry["DisplayVersion"] == version
             app = target / "Omini工具箱.exe"
@@ -84,6 +95,9 @@ def main():
                 with (source / name).open("rb") as original, (target / name).open("rb") as copied:
                     assert hashlib.file_digest(original, "sha256").digest() == hashlib.file_digest(copied, "sha256").digest()
             report["binary_integrity"] = True
+            for name in ("account-sync.js", "account-sync.css", "memo-editor.js", "memos.js", "memos.css"):
+                assert (target / "_internal/web" / name).read_bytes() == (root / "web" / name).read_bytes(), name
+            report["bundled_account_sync_and_memo_resources"] = True
             report["start_menu_shortcut"] = (shortcut_root / "Omini工具箱.lnk").is_file()
             user_file = target / "my-personal-file.txt"
             user_file.write_text("keep-extra-files", encoding="utf-8")
@@ -161,7 +175,7 @@ def main():
                  f"/LOG={root / 'verification/installer-uninstall.log'}"], environment)
             installed = False
             report["uninstalled_program"] = not app.exists() and not (target / "tools/syncthing.exe").exists()
-            report["uninstall_registration_removed"] = uninstall_entry() is None
+            report["uninstall_registration_removed"] = uninstall_entry(app_key) is None
             report["shortcuts_removed"] = not (shortcut_root / "Omini工具箱.lnk").exists()
             report["personal_settings_preserved"] = "keep-personal-settings" in data.read_text(encoding="utf-8")
             report["synced_files_preserved"] = synced.read_text(encoding="utf-8") == "keep-synced-files"
@@ -176,6 +190,9 @@ def main():
             if installed and (target / "unins000.exe").exists():
                 assert (target / "unins000.exe").resolve().parent == target.resolve()
                 run([str(target / "unins000.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], environment)
+    if args.isolated_registration:
+        report["existing_installation_preserved"] = uninstall_entry() == original_installation
+        assert report["existing_installation_preserved"]
     (root / "verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
 

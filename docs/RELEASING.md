@@ -24,7 +24,7 @@ py -3.11 scripts/verify_compact_release.py "dist-sync-$version/Omini工具箱" -
 ./scripts/build_installer.ps1
 ```
 
-安装包生成到 `dist-installer-版本/`，附带 SHA-256 文件。可用 `scripts/verify_installer.py` 在临时目录验证安装、启动、覆盖升级和卸载后的数据保留；该验证在本机已有正式安装时会保留现有安装并停止执行。
+安装包生成到 `dist-installer-版本/`，附带 SHA-256 文件。可用 `scripts/verify_installer.py` 在临时目录验证安装、启动、覆盖升级和卸载后的数据保留。已有正式安装时使用 `py -3.11 scripts/verify_installer.py "dist-installer-版本/Omini工具箱-版本-Setup.exe" --isolated-registration`：同一安装包通过 `/OMINIVERIFY=1` 使用独立测试 AppId，测试结束核对原安装注册项保持一致。默认模式在已有安装时停止执行。
 
 1.1.8 的 AI 助手检查包含：停服显示本地成员、额度与操作记录重启恢复、恢复上次运行的账号池，以及手动停止后保持停止。安装器检查还会逐字节验证升级和卸载保留成员凭据、加密配置、状态与操作记录。所有检查使用隔离数据目录。
 

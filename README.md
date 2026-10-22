@@ -2,7 +2,7 @@
 
 Windows 桌面工具箱。包含下载中心、校园网、课表、超级备忘录、Bright Data、多电脑文件夹同步、Omini API 和 AI 编程助手。
 
-当前版本 **1.2.0**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.2.0)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
+当前版本 **1.2.1**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.2.1)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
 ## 统一账号与超级备忘录
 
@@ -91,11 +91,11 @@ py -3.11 app.py
 
 ### Windows 安装版
 
-本地安装包位于 `dist-installer-1.2.0/Omini工具箱-1.2.0-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.0-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+本地安装包位于 `dist-installer-1.2.1/Omini工具箱-1.2.1-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.1-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.2.0/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
+已有完整 `dist-sync-1.2.1/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -103,7 +103,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.0`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.1`。
 
 1.1.6 移除内置浏览器核心与随包 FFmpeg，备忘录替换为原生离线 TXT 笔记。网页统一使用系统浏览器；安装器继续采用 LZMA2 高压缩。构建脚本自动排除 `tools/` 中残留的 FFmpeg 文件，无需手动删除旧开发工具。覆盖升级会清理旧版安装目录中的浏览器运行库和 FFmpeg，个人数据目录保留。
 

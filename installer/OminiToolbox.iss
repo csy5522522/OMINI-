@@ -7,7 +7,7 @@
 #endif
 
 [Setup]
-AppId={{87C65C31-3F6B-4D75-A698-ED691D22FA37}
+AppId={code:GetApplicationId}
 AppName=Omini工具箱
 AppVersion={#AppVersion}
 AppVerName=Omini工具箱 {#AppVersion}
@@ -27,6 +27,7 @@ UninstallDisplayIcon={app}\Omini工具箱.exe
 UninstallDisplayName=Omini工具箱
 WizardStyle=modern
 ShowLanguageDialog=no
+UsePreviousLanguage=no
 Compression=lzma2/ultra64
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
@@ -86,6 +87,15 @@ Name: "{autodesktop}\Omini工具箱"; Filename: "{app}\Omini工具箱.exe"; Work
 Filename: "{app}\Omini工具箱.exe"; Description: "运行 Omini工具箱"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function GetApplicationId(Param: String): String;
+begin
+  { Keep installer verification separate from an existing user installation. }
+  if ExpandConstant('{param:OMINIVERIFY|0}') = '1' then
+    Result := '{7E2C2E2F-5237-43BE-B64A-AC0A193146B8}'
+  else
+    Result := '{87C65C31-3F6B-4D75-A698-ED691D22FA37}';
+end;
+
 procedure InitializeWizard;
 begin
   WizardForm.WelcomeLabel2.Caption := '此向导将把 Omini工具箱安装到您的电脑。' + #13#10#13#10 +

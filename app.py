@@ -1211,6 +1211,10 @@ class SettingsPage(QWidget):
         self.ffmpeg_status.setWordWrap(True); self.ffmpeg_status.setTextFormat(Qt.TextFormat.PlainText)
         ffmpeg_form.addRow(self.ffmpeg_status)
         layout.addWidget(ffmpeg_box)
+        from component_installer import ComponentPanel
+        self.components = ComponentPanel(APP_DIR, self)
+        self.components.ffmpeg_installed.connect(self.installed_ffmpeg)
+        layout.addWidget(self.components)
         self.updates = UpdatePanel(APP_VERSION, APP_DIR / "updates", self)
         layout.addWidget(self.updates)
         layout.addStretch()
@@ -1237,6 +1241,12 @@ class SettingsPage(QWidget):
             self.ffmpeg_path.setText(path)
             self.detect_ffmpeg()
 
+    def installed_ffmpeg(self, path):
+        self.ffmpeg_path.setText(path)
+        self.settings["ffmpeg_path"] = path
+        save_json(SETTINGS_FILE, self.settings)
+        self.detect_ffmpeg()
+
     def detect_ffmpeg(self):
         try:
             path = resolve_ffmpeg(self.ffmpeg_path.text(), [resource_path("tools"), Path(sys.executable).parent / "tools"])
@@ -1259,6 +1269,12 @@ class MainWindow(QMainWindow):
         ensure_app_dirs()
         self.settings = {"download_dir": default_download_dir(), "concurrency": 2, "theme": "深色"}
         self.settings.update(load_json(SETTINGS_FILE, {}))
+        if self.settings.get("account_workspace_active"):
+            from assistant_data import read_protected
+            guest, _ = read_protected(APP_DIR / "guest-desktop.json", {})
+            for key in ("theme", "features", "concurrency", "school_timetable"):
+                if key in guest: self.settings[key] = guest[key]
+                else: self.settings.pop(key, None)
         self.manager = TaskManager(self.settings)
         self.pending_update = None
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
@@ -1288,6 +1304,8 @@ class MainWindow(QMainWindow):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda reason: self.restore_window() if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
         self.tray.show()
+        from account_sync import DesktopAccountSync
+        self.cloud_sync = DesktopAccountSync(APP_DIR, self, lambda value: save_json(SETTINGS_FILE, value))
 
     def _build_ui(self) -> None:
         root = QWidget(); self.setCentralWidget(root); layout = QHBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
@@ -1362,14 +1380,15 @@ class MainWindow(QMainWindow):
 
     def create_feature_page(self, feature):
         save = lambda value: save_json(SETTINGS_FILE, value)
+        workspace = self.cloud_sync.root if hasattr(self, "cloud_sync") else APP_DIR
         if feature == "downloads": return DownloadPage(self.manager, self.settings)
         if feature == "campus":
             from campus_page import CampusPage
             return CampusPage(self.settings, save, self)
         if feature == "timetable":
             from timetable_page import TimetablePage
-            return TimetablePage(self.settings, save, APP_DIR / "school-timetable.json",
-                                 lambda value: save_json(APP_DIR / "school-timetable.json", value), self)
+            return TimetablePage(self.settings, save, workspace / "school-timetable.json",
+                                 lambda value: save_json(workspace / "school-timetable.json", value), self)
         if feature == "notes":
             from text_notes_page import TextNotesPage
             return TextNotesPage(APP_DIR / "text-notes.json", self, account=self.settings_page.account)
@@ -1384,7 +1403,7 @@ class MainWindow(QMainWindow):
             return OminiApiPage(self.settings, save, self)
         if feature == "ai_assistants":
             from ai_assistants_page import AiAssistantsPage
-            return AiAssistantsPage(APP_DIR / "ai-assistants", self)
+            return AiAssistantsPage(workspace / "ai-assistants", self)
         page = QLabel("更多工具正在规划中"); page.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return page
 
@@ -1451,7 +1470,7 @@ class MainWindow(QMainWindow):
         self.account_button.setToolTip(user["email"] if user else "打开账号注册、登录及同步设置")
 
     def prepare_account_switch(self):
-        return not self.notes_page or self.notes_page.flush()
+        return (not self.notes_page or self.notes_page.flush()) and (not hasattr(self, "cloud_sync") or self.cloud_sync.prepare_switch())
 
     def login_campus(self):
         if self.campus_page: self.campus_page.manual_login()
@@ -1587,13 +1606,19 @@ class MainWindow(QMainWindow):
         pages = [page for page in pages if page is not None] + self.retired_pages[:]
         for page in pages:
             if hasattr(page, "stop"): page.stop()
+        if hasattr(self, "cloud_sync"): self.cloud_sync.stop()
         self.settings_page.account.stop()
         self.settings_page.updates.stop()
+        self.settings_page.components.stop()
         pending = [page.worker for page in pages + [self.settings_page.account]
                    if getattr(page, "worker", None) and page.worker.isRunning()]
         update_worker = self.settings_page.updates.worker
         if update_worker and update_worker.isRunning():
             pending.append(update_worker)
+        sync_worker = getattr(getattr(self, "cloud_sync", None), "worker", None)
+        if sync_worker and sync_worker.isRunning(): pending.append(sync_worker)
+        component_worker = self.settings_page.components.worker
+        if component_worker and component_worker.isRunning(): pending.append(component_worker)
         if pending:
             self.quitting = True
             # A thread may finish between isRunning() and connecting finished.

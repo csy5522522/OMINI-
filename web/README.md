@@ -1,5 +1,9 @@
 # Omini Web
 
+邮箱账号的课表、学期日期、主题、并发数和功能选择在网页与客户端间共享。「AI 编程助手」页面管理同一账号的 Codex 成员、启停状态、调度、权重、模型和助手连接配置，并显示客户端同步的额度快照与操作记录。账号池进程继续运行在电脑本地。
+
+账号同步通过带版本的加密文档保存；网页助手离线编辑使用 IndexedDB 与不可导出 WebCrypto 密钥加密暂存，恢复连接后重试。同字段并发编辑保留云端值及备份，可在偏好设置下载备份或恢复冲突字段。退出账号清除当前视图，未上传的加密草稿按账号隔离。未变化的资源只返回版本号。
+
 正式地址：https://my.omini.cn；管理后台：https://my.omini.cn/admin。
 
 邮箱注册登录与桌面版共用账号。网页提供下载中心、学校课表和超级备忘录；偏好设置可勾选加载功能，取消后隐藏侧栏。个人下载、课表、备忘录、图片与设置按账号隔离。
@@ -89,6 +93,8 @@ node --check web/app.js
 npm install --prefix .cache/web-test --no-audit --no-fund linkedom@0.18.13
 node tests/test_web_frontend.cjs
 node tests/test_memo_frontend.cjs
+python -m unittest tests.test_account_sync tests.test_components -v
+python -m tests.account_sync_check
 python -m unittest tests.test_memo_editor tests.test_text_notes tests.test_memos tests.test_desktop_settings -v
 python -m tests.memo_workspace_check
 ```

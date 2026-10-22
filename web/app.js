@@ -36,9 +36,10 @@ function icons(root = document) { $$('[data-icon]', root).forEach(el => { el.out
 icons();
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let tasks = [], currentType = 'video', currentFilter = 'all', selectedWeek = 1;
+let timetableRevision = 0;
 let timetable = null, savedTimetable = null, firstMonday = '', demo = false, connected = false;
 let toastTimer, polling = false;
-let features = {downloads:true,timetable:true,notes:true}, auth = {authenticated:false,user:null,access_password_required:false};
+let features = {downloads:true,timetable:true,notes:true,ai_assistants:true}, auth = {authenticated:false,user:null,access_password_required:false};
 let authMode = 'login', authGeneration = 0, timetableLoaded = false, timetableLoading = false;
 const terms = {3:'第一学期',12:'第二学期',16:'第三学期'};
 const statuses = {queued:'等待中',running:'下载中',completed:'已完成',paused:'已暂停',failed:'失败',cancelled:'已取消'};
@@ -67,19 +68,20 @@ function setConnection(ok) {
   $('#submit-download').disabled = !ok || !features.downloads;
 }
 function route() {
-  const wanted = ['timetable','notes'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'downloads';
+  const wanted = ['timetable','notes','ai_assistants'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'downloads';
   const page = features[wanted] ? wanted : Object.keys(features).find(key=>features[key]) || 'workspace';
   if (location.hash !== `#${page}`) location.hash = `#${page}`;
   $$('.page').forEach(el => { el.hidden = el.id !== `page-${page}`; });
   $$('.nav-item[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
-  const title = {downloads:'下载中心',timetable:'学校课表',notes:'超级备忘录',workspace:'工作空间'}[page];
+  const title = {downloads:'下载中心',timetable:'学校课表',notes:'超级备忘录',ai_assistants:'AI 编程助手',workspace:'工作空间'}[page];
   $('#breadcrumb-page').textContent = title;
   document.title = `${title} · Omini`;
   if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();
   if (page === 'notes' && connected && typeof loadMemos === 'function') loadMemos();
+  if (page === 'ai_assistants' && connected && typeof loadAccountSync === 'function') loadAccountSync();
 }
 function applyFeatures(selected = features) {
-  for (const key of ['downloads','timetable','notes']) {
+  for (const key of ['downloads','timetable','notes','ai_assistants']) {
     if (typeof selected[key] === 'boolean') features[key] = selected[key];
     $(`[data-page="${key}"]`).hidden = !features[key];
     if (!$('#settings-dialog').open) $(`#feature-${key}`).checked = features[key];
@@ -91,16 +93,17 @@ function applyFeatures(selected = features) {
 window.addEventListener('hashchange', route); route();
 const now = new Date();
 $('#today-date').textContent = now.toLocaleDateString('zh-CN', {month:'long',day:'numeric',weekday:'long'});
-function setTheme(theme) {
+function setTheme(theme, sync = false) {
   document.documentElement.dataset.theme = theme;
   $('#theme-label').textContent = theme === 'dark' ? '切换浅色模式' : '切换深色模式';
   try { localStorage.setItem('omini-theme', theme); } catch (_) {}
+  if(sync && typeof saveCloudTheme === 'function') saveCloudTheme(theme);
 }
 let theme = 'light';
 try { theme = localStorage.getItem('omini-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (_) {}
 setTheme(theme);
-$('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-$('#mobile-theme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+$('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true));
+$('#mobile-theme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true));
 $('#mobile-settings').addEventListener('click', () => showDialog('settings-dialog'));
 $$('[data-close]').forEach(el => el.addEventListener('click', () => $(`#${el.dataset.close}`).close()));
 $$('dialog').forEach(el => el.addEventListener('click', e => {
@@ -135,8 +138,9 @@ function setAuthMode(mode) {
 }
 $$('[data-auth-mode]').forEach(button=>button.addEventListener('click',()=>setAuthMode(button.dataset.authMode)));
 function resetWorkspace() {
+  if(typeof resetAccountSync==='function')resetAccountSync();
   if(typeof resetMemos==='function')resetMemos();
-  authGeneration++; tasks=[]; timetable=null; savedTimetable=null; firstMonday=''; demo=false; timetableLoaded=false;
+  authGeneration++; timetableRevision=0; tasks=[]; timetable=null; savedTimetable=null; firstMonday=''; demo=false; timetableLoaded=false;
   renderTasks(); updateWeekOptions(); renderTimetable(); setConnection(false);
   $('#engine-list').innerHTML=''; $('#download-dir').textContent=''; $('#settings-dir').textContent='';
   $('#detail-content').textContent=''; $('#school-cookie').value='';
@@ -235,6 +239,7 @@ async function refreshTasks() {
     $('#download-dir').textContent=state.download_dir; $('#download-dir').title=state.download_dir;
     $('#settings-dir').textContent=state.download_dir; $('#version-label').textContent=state.version;
     if (!$('#settings-dialog').open) $('#concurrency').value=state.concurrency;
+    if (typeof loadAccountSync === 'function' && auth.user) loadAccountSync();
     $('#engine-list').innerHTML=Object.entries(state.engines).map(([name,ready])=>`<div class="engine-row"><span>${esc(name)}</span><span class="engine-status ${ready?'':'missing'}"><i></i>${ready?'就绪':'未安装'}</span></div>`).join('');
   } catch (error) { if(generation===authGeneration)setConnection(false); }
   finally { polling=false; }
@@ -243,7 +248,7 @@ $('#refresh-tasks').addEventListener('click',async()=>{await refreshTasks();toas
 $('#settings-open').addEventListener('click',()=>showDialog('settings-dialog'));
 $('#settings-form').addEventListener('submit',async e=>{
   e.preventDefault();const button=$('#settings-save');button.disabled=true;
-  try{const selected={downloads:$('#feature-downloads').checked,timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked};
+  try{const selected={downloads:$('#feature-downloads').checked,timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked,ai_assistants:$('#feature-ai_assistants').checked};
     const result=await api('/api/settings',{concurrency:Number($('#concurrency').value),features:selected});
     $('#settings-dialog').close();applyFeatures(result.features||selected);await refreshTasks();toast('功能加载与偏好设置已保存');
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
@@ -261,6 +266,7 @@ function updateWeekOptions() {
   $('#week-select').value=selectedWeek;
 }
 function acceptTimetable(data) {
+  timetableRevision=data.revision??timetableRevision;
   timetableLoaded=true;
   savedTimetable=data.schedule; timetable=data.schedule; firstMonday=data.first_monday||''; demo=false;
   $('#demo-toggle').textContent='预览示例课表'; $('#first-monday').value=firstMonday;
@@ -314,13 +320,13 @@ $('#prev-week').addEventListener('click',()=>{selectedWeek=Math.max(1,selectedWe
 $('#next-week').addEventListener('click',()=>{selectedWeek=Math.min(maxWeeks(),selectedWeek+1);$('#week-select').value=selectedWeek;renderTimetable();});
 $('#current-week').addEventListener('click',()=>{if(!firstMonday){showDialog('semester-dialog');return;}const current=currentWeek();if(current<1||current>maxWeeks()){toast('当前日期不在所设学期内，请检查开学日期。',true);return;}selectedWeek=current;$('#week-select').value=current;renderTimetable();});
 $('#semester-open').addEventListener('click',()=>showDialog('semester-dialog'));
-$('#semester-form').addEventListener('submit',async e=>{e.preventDefault();if(demo){toast('请先退出示例预览，再设置自己的学期。',true);return;}try{acceptTimetable(await api('/api/timetable/semester',{first_monday:$('#first-monday').value}));$('#semester-dialog').close();toast('学期日期已保存');}catch(error){toast(error.message,true);}});
+$('#semester-form').addEventListener('submit',async e=>{e.preventDefault();if(demo){toast('请先退出示例预览，再设置自己的学期。',true);return;}try{acceptTimetable(await api('/api/timetable/semester',{first_monday:$('#first-monday').value,base_revision:timetableRevision}));$('#semester-dialog').close();toast('学期日期已保存');}catch(error){toast(error.message,true);}});
 $('#import-open').addEventListener('click',()=>showDialog('import-dialog'));
 $('#import-file').addEventListener('change',async e=>{
   const input=e.target,file=input.files[0];if(!file)return;
   if(file.size>24*1024*1024){toast('请选择小于 24 MB 的文件。',true);input.value='';return;}
   input.disabled=true;$('#import-status').textContent='正在解析课表…';
-  try{const data=await api('/api/timetable/import',{content:await file.text()});acceptTimetable(data);$('#import-dialog').close();toast(`已导入 ${data.schedule.courses.length} 条课程安排`);}
+  try{const data=await api('/api/timetable/import',{content:await file.text(),base_revision:timetableRevision});acceptTimetable(data);$('#import-dialog').close();toast(`已导入 ${data.schedule.courses.length} 条课程安排`);}
   catch(error){$('#import-status').textContent=error.message;toast(error.message,true);}
   finally{input.disabled=false;input.value='';}
 });
@@ -330,7 +336,7 @@ $('#online-open').addEventListener('click',()=>{$('#school-year').value=timetabl
 $('#online-dialog').addEventListener('close',()=>{$('#school-cookie').value='';});
 $('#online-form').addEventListener('submit',async e=>{
   e.preventDefault();const button=$('#online-submit');button.disabled=true;button.textContent='正在读取…';
-  try{const data=await api('/api/timetable/refresh',{cookie:$('#school-cookie').value,year:$('#school-year').value,term:$('#school-term').value});acceptTimetable(data);$('#online-dialog').close();toast('课表已更新');}
+  try{const data=await api('/api/timetable/refresh',{cookie:$('#school-cookie').value,year:$('#school-year').value,term:$('#school-term').value,base_revision:timetableRevision});acceptTimetable(data);$('#online-dialog').close();toast('课表已更新');}
   catch(error){toast(error.message,true);}
   finally{button.disabled=false;button.textContent='读取课表';$('#school-cookie').value='';}
 });

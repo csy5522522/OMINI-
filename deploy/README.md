@@ -23,3 +23,9 @@ Nginx 配置模板在 `nginx.conf`。先使用 HTTP 的 ACME 路径签发 `my.om
 手动数据库备份：在部署目录运行 `sh deploy/backup.sh`，使用事务一致性导出并以 gzip 保存到私有备份目录，包含全部图片和历史。请定期复制到服务器以外的备份存储。更新只需重建 Web 容器并保留卷；不要运行 `docker compose down -v`，该命令会移除持久数据卷。
 
 本机开发仍可运行 `python web_server.py --open`，未配置 MySQL 时使用独立 SQLite 数据目录。桌面本机登录状态由 Windows DPAPI 加密，密码不落盘。邮箱是账号标识，本版本未接入邮件验证码。
+
+账号工作区通过 `/api/sync` 和 `/api/sync/{preferences,schedule,assistants}` 同步，持久化到同一 MySQL 中；旧账号偏好与课表在首次访问时迁移。Codex 凭据只来自工具箱账号池中导入或登录的成员，版本与冲突备份同样加密。同步不会启动服务器上的账号池进程，也不会改变电脑上的全局 Codex 登录。
+
+服务首次启动自动在持久卷生成 `/data/account-sync.key`（权限 0600），用于 Fernet 加密；可用 `OMINI_SYNC_KEY_FILE` 指向预先配置的密钥文件。更新容器须保留 `web_data` 与 `mysql_data`。`deploy/backup.sh` 同时保存数据库与对应的 `.account-sync.key` 文件；恢复时先恢复原密钥，再导入数据库。已有同步文档而密钥缺失时，服务会停止启动，保留原数据以便恢复。请将密钥备份与数据库备份一起存入私有备份存储。
+
+更新后验证 `python -m unittest tests.test_account_sync tests.test_components`，并运行 `python -m tests.account_sync_check` 检查两个独立 Qt 客户端与 Chromium 的同账号同步、加密离线草稿、成员增删、冲突恢复、账号切换和重启。测试使用临时服务与虚拟凭据，截图及报告位于 `verification/account-sync/`。

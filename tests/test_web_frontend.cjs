@@ -148,7 +148,7 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal($('[data-page="timetable"]').hidden,true);assert.equal($('.timetable-shortcut').hidden,true);
     assert.equal($('#page-downloads').hidden,false);assert.equal($('#page-timetable').hidden,true);
     run('location.hash="#timetable";route()');assert.equal($('#page-timetable').hidden,true);
-    click('#settings-open');$('#feature-downloads').checked=false;$('#feature-notes').checked=false;submit('#settings-form');await tick();
+    click('#settings-open');$('#feature-downloads').checked=false;$('#feature-notes').checked=false;$('#feature-ai_assistants').checked=false;submit('#settings-form');await tick();
     assert.equal($('#page-workspace').hidden,false);assert.equal($('[data-page="downloads"]').hidden,true);
     assert.equal($('#submit-download').disabled,true);
     click('#choose-features');assert.equal($('#settings-dialog').open,true);

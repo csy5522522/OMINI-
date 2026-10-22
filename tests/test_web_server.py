@@ -189,7 +189,7 @@ class WebServerTests(unittest.TestCase):
             self.assertEqual(self.post("/api/tasks", {"type": "file", "source": source}).status_code, 400)
         for filename in ("../../escape.bin", "C:\\escape.bin", "bad\nfile"):
             self.assertEqual(self.post("/api/tasks", {"type": "file", "source": self.source + "/sample.bin", "options": {"filename": filename}}).status_code, 400)
-        for concurrency in (0, 6, True, "2"):
+        for concurrency in (0, 7, True, "2"):
             self.assertEqual(self.post("/api/settings", {"concurrency": concurrency}).status_code, 400)
         self.assertEqual(self.post("/api/timetable/refresh", {"cookie": "", "year": "2026", "term": "3"}).status_code, 400)
 
@@ -279,7 +279,7 @@ class EmailWebTests(unittest.TestCase):
         response = self.post("/api/settings", {"features": {"downloads": False, "timetable": False}})
         self.assertEqual(response.status_code, 200, response.text)
         state = self.get("/api/state").json()
-        self.assertEqual(state["features"], {"downloads": False, "timetable": False, "notes": True})
+        self.assertEqual(state["features"], {"downloads": False, "timetable": False, "notes": True, "ai_assistants": True})
         self.assertEqual(state["tasks"], []); self.assertEqual(state["engines"], {})
         self.assertEqual(self.get("/api/timetable").status_code, 403)
         self.assertEqual(self.post("/api/tasks", {"type": "file", "source": "https://example.test/a"}).status_code, 403)

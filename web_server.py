@@ -25,6 +25,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal, Slot
 import app as desktop
 import school_timetable as school
 from accounts import AccountStore
+from account_data import AccountDataStore, RESOURCES
 from database import secret
 from memo_store import MemoStore, MemoConflict
 from feature_config import WEB_FEATURES, enabled_features, validate_features
@@ -86,6 +87,7 @@ class WebState:
         self.password = password
         self.accounts = AccountStore(self.data_dir / "accounts.sqlite3")
         self.memos = MemoStore(self.accounts.database)
+        self.account_data = AccountDataStore(self.accounts.database, self.data_dir)
         admin_password = secret("OMINI_ADMIN_PASSWORD")
         if admin_password: self.accounts.bootstrap_admin(admin_password)
         self.sessions = {}
@@ -180,7 +182,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def preferences(self):
         if not self.user: return self.state.settings
-        return self.state.memos.get_data(self.user["id"], "settings", {"concurrency": 2})
+        return self.resource("preferences")["data"]
+
+    def resource(self, name, known_revision=None):
+        owner = self.user["id"]
+        result = self.state.account_data.get(owner, name, known_revision)
+        if result["revision"] == 0 and name in {"preferences", "schedule"}:
+            legacy = self.state.memos.get_data(owner, "settings" if name == "preferences" else "schedule", {})
+            if name == "preferences":
+                legacy = {k: v for k, v in legacy.items() if k in {"theme", "features", "concurrency"}}
+            if legacy:
+                result = self.state.account_data.exchange(owner, name, 0, legacy)
+        return result
 
     @property
     def features(self):
@@ -197,16 +210,18 @@ class Handler(BaseHTTPRequestHandler):
         return task
 
     def schedule(self):
-        return self.state.memos.get_data(self.user["id"], "schedule", {"schedule": None, "first_monday": ""}) if self.user else self.state.schedule()
+        if not self.user: return self.state.schedule()
+        result = self.resource("schedule")
+        return {"schedule": None, "first_monday": "", **result["data"], "revision": result["revision"]}
 
-    def save_schedule(self, value):
+    def save_schedule(self, value, base_revision=None):
         if not self.user: return self.state.save_schedule(value)
         schedule = school.validate_cache(value)
         old = self.schedule()
         monday = old.get("first_monday", "") if old.get("schedule") and (old["schedule"].get("year"), old["schedule"].get("term")) == (schedule["year"], schedule["term"]) else ""
         result = {"schedule": schedule, "first_monday": monday}
-        self.state.memos.set_data(self.user["id"], "schedule", result)
-        return result
+        saved = self.state.account_data.exchange(self.user["id"], "schedule", old["revision"] if base_revision is None else base_revision, result)
+        return {**saved["data"], "revision": saved["revision"], "conflicts": saved["conflicts"]}
 
     def log_message(self, *args):
         # Request paths and headers may contain private data.
@@ -283,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
                       "/memos.js": ("memos.js", "text/javascript; charset=utf-8"),
                       "/memo-editor.js": ("memo-editor.js", "text/javascript; charset=utf-8"),
                       "/memos.css": ("memos.css", "text/css; charset=utf-8"),
+                      "/account-sync.js": ("account-sync.js", "text/javascript; charset=utf-8"),
+                      "/account-sync.css": ("account-sync.css", "text/css; charset=utf-8"),
                       "/admin": ("admin.html", "text/html; charset=utf-8"),
                       "/admin/": ("admin.html", "text/html; charset=utf-8"),
                       "/admin.js": ("admin.js", "text/javascript; charset=utf-8"),
@@ -305,6 +322,18 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(502, {"error": "服务读取失败，请稍后重试。"})
 
     def get_api(self, path):
+        if path.startswith("/api/sync"):
+            if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录同步。"})
+            if path == "/api/sync":
+                from urllib.parse import parse_qs
+                supplied = parse_qs(urlsplit(self.path).query).get("revisions", ["{}"])[0]
+                known = json.loads(supplied)
+                if not isinstance(known, dict): raise ValueError("同步版本列表有误。")
+                return self.respond(200, {"resources": {name: self.resource(name, known.get(name)) for name in RESOURCES},
+                                          "conflicts": self.state.account_data.conflicts(self.user["id"])})
+            if path.startswith("/api/sync/conflicts/"):
+                return self.respond(200, self.state.account_data.conflicts(self.user["id"], path.rsplit("/", 1)[-1]))
+            return self.respond(404, {"error": "同步接口不存在。"})
         if path.startswith("/api/admin/"):
             if not self.user or self.user.get("role") != "admin": return self.respond(403, {"error": "请使用管理员账号登录。"})
             if path == "/api/admin/users": return self.respond(200, {"users": self.state.accounts.list_users(), "version": WEB_VERSION})
@@ -331,6 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {"version": WEB_VERSION, "tasks": tasks,
                                      "download_dir": str(self.state.download_dir), "engines": engines,
                                      "features": features,
+                                     "theme": self.preferences().get("theme"),
                                      "concurrency": self.preferences().get("concurrency", 2)})
         if path == "/api/timetable":
             return self.respond(200, self.schedule())
@@ -435,6 +465,11 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(502, {"error": "服务请求失败，请稍后重试；已有任务和课表已保留。"})
 
     def post_api(self, path, value):
+        if path.startswith("/api/sync/"):
+            if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录同步。"})
+            name = path.rsplit("/", 1)[-1]
+            result = self.state.account_data.exchange(self.user["id"], name, value.get("revision"), value.get("data"))
+            return self.respond(200, result)
         if path.startswith("/api/admin/"):
             if not self.user or self.user.get("role") != "admin": return self.respond(403, {"error": "请使用管理员账号登录。"})
             if path == "/api/admin/user":
@@ -493,12 +528,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {"ok": True})
         if path == "/api/settings":
             count = value.get("concurrency", self.preferences().get("concurrency", 2))
-            if type(count) is not int or not 1 <= count <= 5:
-                raise ValueError("并发数应为 1 至 5。")
+            if type(count) is not int or not 1 <= count <= 6:
+                raise ValueError("并发数应为 1 至 6。")
             selected = validate_features(value.get("features", {}), WEB_FEATURES)
             if self.user:
                 updated = {**self.preferences(), "concurrency": count, "features": {**self.features, **selected}}
-                self.state.memos.set_data(self.user["id"], "settings", updated)
+                baseline = self.resource("preferences")
+                updated["features"] = {**self.features, **baseline["data"].get("features", {}), **selected}
+                if "theme" in value: updated["theme"] = value["theme"]
+                self.state.account_data.exchange(self.user["id"], "preferences", baseline["revision"], updated)
                 if not updated["features"]["downloads"]:
                     def pause_owned():
                         for task in self.state.manager.tasks:
@@ -531,19 +569,20 @@ class Handler(BaseHTTPRequestHandler):
                     schedule = school.import_har(file)
             else:
                 schedule = school.validate_cache(payload)
-            return self.respond(200, self.save_schedule(schedule))
+            return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
         if path == "/api/timetable/refresh":
             # Cookie stays in this request; never saved with timetable data.
             schedule = school.fetch_schedule(str(value.get("cookie", "")), str(value.get("year", "")), str(value.get("term", "")))
-            return self.respond(200, self.save_schedule(schedule))
+            return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
         if path == "/api/timetable/semester":
             monday = str(value.get("first_monday", ""))
             if monday and date.fromisoformat(monday).weekday() != 0:
                 raise ValueError("第一周开始日期请选择周一。")
             if self.user:
-                schedule = self.schedule(); schedule["first_monday"] = monday
-                self.state.memos.set_data(self.user["id"], "schedule", schedule)
-                return self.respond(200, schedule)
+                schedule = self.schedule()
+                result = self.state.account_data.exchange(self.user["id"], "schedule", value.get("base_revision", schedule["revision"]),
+                    {"schedule": schedule["schedule"], "first_monday": monday})
+                return self.respond(200, {**result["data"], "revision": result["revision"]})
             with self.state.lock:
                 desktop.save_json(self.state.data_dir / "semester.json", {"first_monday": monday})
             return self.respond(200, self.state.schedule())

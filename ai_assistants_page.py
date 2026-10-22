@@ -456,6 +456,33 @@ class AiAssistantsPage(QWidget):
         if errors:
             self.report(f"{errors} 个本地凭据文件读取异常，原文件已保留。", "storage.warning")
 
+    def apply_cloud(self):
+        self._restoring = True
+        try:
+            local_drafts = {name for name, profile in self.profiles.items()
+                            if profile.raw_value() != self.store.data["profiles"][name]}
+            self.store = AssistantStore(self.root)
+            self.state_store = AssistantState(self.root)
+            for name, profile in self.profiles.items():
+                if name in local_drafts: continue
+                value = self.store.data["profiles"][name]
+                profile.mode.setCurrentIndex(max(0, profile.mode.findData(value["mode"])))
+                for key in ("proxy", "no_proxy"):
+                    if getattr(profile, key).text() != value[key]: getattr(profile, key).setText(value[key])
+                profile.args.setPlainText("\n".join(value.get("args", [])))
+                if name == "codex": profile.kind.setCurrentIndex(1 if value.get("desktop") else 0)
+            pool = self.store.data["pool"]
+            self.strategy.setCurrentIndex(max(0, self.strategy.findData(pool["strategy"])))
+            self.affinity.setChecked(pool["session_affinity"])
+            self.model.setCurrentText(pool.get("model", ""))
+            self.quotas = copy.deepcopy(self.state_store.data.get("quotas", {}))
+            self.set_accounts(local_members(self.root)[0], persist=False)
+            self.history_view.setPlainText("\n".join(history_line(r) for r in self.history.records()))
+            self.status.setText("账号配置与 Codex 成员已同步。运行中的服务配置可通过「应用调度」生效。")
+        finally:
+            self._restoring = False
+        if self.ready and not self.worker: self.refresh_accounts()
+
     def connect_persistence(self):
         for name, profile in self.profiles.items():
             label = ASSISTANTS[name][0] + " 配置"

@@ -41,7 +41,7 @@ class AccountPanel(QGroupBox):
         self.store = DesktopSession(self.root / "account-session.bin")
         self.url = settings.get("account_server", DEFAULT_SERVICE)
         self.token = self.store.load(self.url)
-        self.user = None
+        self.user = self.store.user(self.url) if self.token else None
         self.before_account_change = None
         self.worker = None
         self.stopping = False
@@ -95,6 +95,14 @@ class AccountPanel(QGroupBox):
         self.status = QLabel("使用邮箱注册或登录，在电脑与网页间同步超级备忘录。也可设置本机服务地址。")
         self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText)
         form.addRow(self.status)
+        sync_row = QWidget(); sync_buttons = QHBoxLayout(sync_row); sync_buttons.setContentsMargins(0, 0, 0, 0)
+        self.sync_button = QPushButton("立即同步全部账号数据")
+        self.backups_button = QPushButton("同步备份与恢复")
+        sync_buttons.addWidget(self.sync_button); sync_buttons.addWidget(self.backups_button)
+        form.addRow(sync_row)
+        self.sync_status = QLabel("登录后自动同步课表、备忘录、偏好与 Codex 成员；离线修改保存在当前账号工作区。")
+        self.sync_status.setWordWrap(True); self.sync_status.setTextFormat(Qt.TextFormat.PlainText)
+        form.addRow(self.sync_status)
         self.remember.toggled.connect(self.remember_changed)
         self.set_busy(False)
         if self.token: QTimer.singleShot(0, lambda: self.request("session"))
@@ -122,7 +130,7 @@ class AccountPanel(QGroupBox):
     def request(self, action):
         if self.worker or self.stopping: return
         if action in {"login", "register", "logout"} and self.before_account_change and not self.before_account_change():
-            self.status.setText("当前备忘录尚未保存，请先处理保存问题。"); return
+            self.status.setText("当前工作区正在保存或执行后台操作，请稍后重试。"); return
         try:
             url = self.selected_url()
             value = None if action == "session" else {}
@@ -166,7 +174,7 @@ class AccountPanel(QGroupBox):
         try:
             self.settings["account_remember"] = checked
             self.save_settings(self.settings)
-            self.store.save(self.url, self.token if checked else "")
+            self.store.save(self.url, self.token if checked else "", self.user)
         except (OSError, ValueError, RuntimeError):
             self.status.setText(self.status.text() + "\n登录状态仅在本次运行保留，本机加密保存未完成。")
 

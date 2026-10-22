@@ -313,6 +313,23 @@ class TimetablePage(QWidget):
         if not self.use_start.isChecked() or self.start.date().dayOfWeek() != 1: return None
         return self.start.date().toPython()
 
+    def apply_cloud(self, value):
+        """Apply a cloud snapshot without replacing local school login cookies."""
+        monday = value.get("first_monday", "")
+        self.config["start_date"] = monday
+        self.use_start.setChecked(bool(monday))
+        if monday: self.start.setDate(QDate.fromString(monday, "yyyy-MM-dd"))
+        if value.get("schedule") is not None:
+            schedule = value["schedule"]
+            self.config.update(year=int(schedule["year"]), term=schedule["term"])
+            self.settings["school_timetable"] = self.config
+            self._display(schedule)
+        else:
+            self.schedule = None
+            self.grid.clearContents(); self.list.setRowCount(0)
+            self.status.setText("账号中尚未保存课表，可导入 HAR 或在线读取。")
+            self.render()
+
     def step_week(self, step):
         n = self.week.currentData() or 1
         index = self.week.findData(max(1, n + step))

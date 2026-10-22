@@ -338,7 +338,10 @@ def test_connection(name: str, profile: dict, timeout=10) -> dict:
 
 
 def engine_path(root: Path) -> Path | None:
-    roots = [Path(root) / "bin", Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "tools"]
+    roots = [Path(root) / "bin"]
+    for ancestor in Path(root).parents:
+        if ancestor.name == "account-workspaces": roots.append(ancestor.parent / "ai-assistants/bin")
+    roots.append(Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "tools")
     if getattr(sys, "frozen", False):
         roots.append(Path(sys.executable).parent / "tools")
     for directory in roots:

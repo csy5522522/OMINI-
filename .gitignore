@@ -39,6 +39,9 @@ temp/
 /deploy/secrets/
 *.sqlite3
 *.sqlite3-*
+account-sync.key
+*.account-sync.key
+**/account-workspaces/
 *.sql.gz
 
 # OS-generated files

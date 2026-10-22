@@ -14,6 +14,8 @@ py -3.11 -m unittest tests.test_omini_api tests.omini_api.test_omini_multisite t
 py -3.11 -m unittest tests.test_ai_assistants tests.test_codex_quota tests.test_pool_scheduling tests.test_text_notes tests.test_local_ffmpeg tests.test_timetable tests.test_class_timetable -v
 py -3.11 -m unittest tests.test_accounts tests.test_desktop_settings tests.test_web_server -v
 node tests/test_web_frontend.cjs
+py -3.11 -m unittest tests.test_account_sync tests.test_components -v
+py -3.11 -m tests.account_sync_check
 ./scripts/build_omini_api.ps1 -DistDir "dist-sync-$version" -WorkDir "build-sync-$version"
 & "./dist-sync-$version/Omini工具箱/Omini工具箱.exe" --self-test-omini-api
 & "./dist-sync-$version/Omini工具箱/Omini工具箱.exe" --self-test-ai-assistants

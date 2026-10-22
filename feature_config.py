@@ -12,7 +12,7 @@ DESKTOP_FEATURES = {
     "ai_assistants": "AI 编程助手",
     "more": "更多工具",
 }
-WEB_FEATURES = {key: DESKTOP_FEATURES[key] for key in ("downloads", "timetable", "notes")}
+WEB_FEATURES = {key: DESKTOP_FEATURES[key] for key in ("downloads", "timetable", "notes", "ai_assistants")}
 PAGE_FEATURES = ("downloads", "campus", "timetable", "notes", None,
                  "brightdata", "sync", "omini_api", "ai_assistants", "more")
 

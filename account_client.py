@@ -74,11 +74,21 @@ class DesktopSession:
             pass
         return ""
 
-    def save(self, url, token):
+    def user(self, url):
+        try:
+            data = json.loads(unprotect_password(self.path.read_text(encoding="utf-8")))
+            user = data.get("user")
+            if data.get("url") == service_url(url) and isinstance(user, dict) and isinstance(user.get("id"), str) and isinstance(user.get("email"), str):
+                return user
+        except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
+            pass
+        return None
+
+    def save(self, url, token, user=None):
         if not token:
             self.path.unlink(missing_ok=True)
             return
-        protected = protect_password(json.dumps({"url": service_url(url), "token": token}))
+        protected = protect_password(json.dumps({"url": service_url(url), "token": token, "user": user}))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(6) + ".tmp")
         try:

@@ -4,8 +4,9 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Omini · 让日常更轻松</title>
-  <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="/favicon.ico"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/memos.css">
   <script src="/app.js" defer></script>
+  <script src="/memo-editor.js" defer></script>
   <script src="/memos.js" defer></script>
 </head>
 <body>
@@ -31,8 +32,22 @@
     <header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong id="breadcrumb-page">下载中心</strong></div><div class="topbar-right"><span id="connection" class="connection"><i></i>正在连接</span><span class="topbar-divider"></span><span id="today-date"></span><button class="icon-button mobile-tool" id="mobile-theme" aria-label="切换深浅主题"><span data-icon="moon"></span></button><button class="icon-button mobile-tool" id="mobile-settings" aria-label="偏好设置"><span data-icon="settings"></span></button><button class="button compact account-button" id="account-open"><span data-icon="user"></span><span id="account-label">邮箱登录 / 注册</span></button></div></header>
     <main>
       <section id="page-notes" class="page" hidden>
-        <div class="page-heading"><div><span class="eyebrow">KEEP WHAT MATTERS</span><h1>超级备忘录<span class="heading-dot">.</span></h1><p>文字、图片与每一次修改，都值得好好保存。</p></div><button class="button primary" id="memo-new">新建备忘录</button></div>
-        <div class="memo-layout card"><aside class="memo-sidebar"><input id="memo-search" type="search" placeholder="搜索标题和正文" aria-label="搜索备忘录"><div class="memo-tabs"><button class="button compact" id="memo-active">全部备忘录</button><button class="button compact" id="memo-trash">回收站</button></div><div id="memo-list"></div></aside><div class="memo-main"><input id="memo-title" maxlength="240" placeholder="备忘录标题" aria-label="备忘录标题" disabled><div class="memo-toolbar"><button class="button compact" id="memo-save" disabled>保存</button><label class="button compact" for="memo-image">插入图片<input type="file" id="memo-image" accept="image/png,image/jpeg,image/gif,image/webp" hidden></label><button class="button compact" id="memo-history" disabled>历史版本</button><button class="button compact" id="memo-delete" disabled>移到回收站</button><button class="button compact" id="memo-restore" hidden>恢复备忘录</button><button class="button compact" id="memo-save-copy" hidden>将冲突编辑保存为副本</button></div><p id="memo-status" class="muted" role="status">选择或新建备忘录。修改后自动保存，图片和历史版本随账号同步。</p><textarea id="memo-content" placeholder="写下想记住的事… 可粘贴图片，或点击插入图片。" aria-label="备忘录正文" disabled></textarea><details class="memo-preview-box" open><summary>文字与图片预览</summary><div id="memo-preview"></div></details></div></div>
+        <div class="memo-page-heading"><div><span class="eyebrow">YOUR PERSONAL NOTEBOOK</span><h1>超级备忘录<span class="heading-dot">.</span></h1></div><span class="memo-heading-caption">留一点空间，给想法。</span></div>
+        <div class="memo-layout card" id="memo-workbench">
+          <aside class="memo-sidebar" aria-label="备忘录列表">
+            <div class="memo-library-heading"><span>我的备忘录</span><button class="icon-button" id="memo-new" title="新建备忘录" aria-label="新建备忘录"><span data-icon="plus"></span></button></div>
+            <div class="memo-search-wrap"><span data-icon="search"></span><input id="memo-search" type="search" placeholder="搜索备忘录" aria-label="搜索备忘录"></div>
+            <button class="memo-navigation selected" id="memo-active" aria-pressed="true"><span data-icon="file"></span>全部备忘录<span id="memo-count" class="memo-count">0</span></button>
+            <div id="memo-list"></div>
+            <div class="memo-library-footer"><button class="memo-navigation" id="memo-trash" aria-pressed="false"><span data-icon="trash"></span>回收站<span id="memo-trash-count" class="memo-count">0</span></button><span class="memo-library-hint">每一个想法，都有迹可循。</span></div>
+          </aside>
+          <div class="memo-main">
+            <button class="memo-back text-button" id="memo-back"><span data-icon="chevron-left"></span>返回列表</button>
+            <div class="memo-document-scroll"><div class="memo-document"><div class="memo-document-eyebrow" id="memo-document-kind">PERSONAL NOTE</div><input id="memo-title" maxlength="240" placeholder="备忘录标题" aria-label="备忘录标题" disabled><div id="memo-content"></div><div class="memo-empty" id="memo-empty"><span data-icon="file"></span><h2>让想法在这里停留</h2><p>从左侧选择一篇备忘录，或新建一页。</p><button class="button primary" id="memo-empty-new">新建备忘录</button></div></div></div>
+            <div class="memo-notice" id="memo-notice" hidden><span id="memo-notice-text" role="status"></span><button class="button compact" id="memo-save-copy" hidden>保存冲突副本</button><button class="button compact" id="memo-retry" hidden>重试保存</button></div>
+            <footer class="memo-editor-footer"><div class="memo-save-state"><i id="memo-state-dot"></i><span id="memo-status" role="status">选择或新建备忘录</span></div><div class="memo-footer-actions"><button class="button compact" id="memo-restore" hidden>恢复备忘录</button><button class="icon-button" id="memo-image-button" title="插入图片" aria-label="插入图片" disabled><span data-icon="image"></span></button><input type="file" id="memo-image" accept="image/png,image/jpeg,image/gif,image/webp" hidden disabled><div class="memo-more-wrap"><button class="icon-button" id="memo-more" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" disabled><span data-icon="more"></span></button><div class="memo-menu" id="memo-menu" role="menu" hidden><button id="memo-save" role="menuitem" disabled><span data-icon="check"></span>立即保存<kbd>Ctrl S</kbd></button><button id="memo-history" role="menuitem" disabled><span data-icon="history"></span>历史版本</button><div class="memo-menu-divider"></div><button id="memo-delete" class="memo-danger" role="menuitem" disabled><span data-icon="trash"></span>移到回收站</button></div></div></div></footer>
+          </div>
+        </div>
       </section>
       <section id="page-workspace" class="page" hidden><div class="card empty-features"><span data-icon="layers"></span><h1>选择你的常用功能</h1><p class="muted">当前功能均已关闭。随时在偏好设置中勾选要加载的功能。</p><button class="button primary" id="choose-features">打开偏好设置</button></div></section>
       <section id="page-downloads" class="page">

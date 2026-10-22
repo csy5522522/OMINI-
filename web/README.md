@@ -6,6 +6,10 @@
 
 超级备忘录支持文字、插入与粘贴图片、自动保存、搜索、回收站、历史动作版本与回滚。回滚追加新版本，不清除原历史。连接中断时，未保存编辑会暂存在当前浏览器的账号草稿中；恢复后可继续保存。多端冲突可保存为副本。图片格式 PNG/JPEG/GIF/WebP，单张最多 10 MB；正文每篇最多 2 MB。
 
+备忘录的文字与图片在同一正文区直接编辑，支持撤销重做和 Ctrl+S。底部图片图标用于插图，「更多」提供立即保存、历史版本和移到回收站。左侧列表显示摘要与更新时间，回收站入口位于底部；手机上可通过「返回列表」切换列表与正文。离线、保存失败和冲突提示直接显示在正文底部。
+
+编辑器使用本地打包的 ProseMirror，运行服务不需要 Node.js 或外部 CDN。修改编辑器源码后，执行 `npm ci --prefix scripts/memo-editor` 和 `npm run build --prefix scripts/memo-editor`，提交生成的 `web/memo-editor.js` 及许可证清单。依赖版本由 package-lock.json 锁定，界面布局参考 Notesnook，样式与业务逻辑为项目内实现。原有纯文本、图片引用与历史版本存储格式保持兼容。
+
 桌面默认连接同一云端，每 20 秒同步，支持本机离线编辑及自动保留冲突副本。未登录的 TXT 与账号缓存独立，导入旧笔记会复制并保留原文件。
 
 生产部署采用 Docker + MySQL 8.4 + Nginx HTTPS，详见 [部署说明](../deploy/README.md)。密码保存为加盐哈希，管理员可启停账号和重置密码。邮箱仅作账号标识，本版本未接入验证码。
@@ -84,6 +88,11 @@ python -m unittest tests.test_accounts tests.test_desktop_settings tests.test_we
 node --check web/app.js
 npm install --prefix .cache/web-test --no-audit --no-fund linkedom@0.18.13
 node tests/test_web_frontend.cjs
+node tests/test_memo_frontend.cjs
+python -m unittest tests.test_memo_editor tests.test_text_notes tests.test_memos tests.test_desktop_settings -v
+python -m tests.memo_workspace_check
 ```
+
+`memo_workspace_check` 在临时账号和目录中使用真实 Chromium 与 Qt 验证双向同步、图片编辑、中文输入事件及手机布局，将两端深浅主题截图和报告保存到 `verification/memo-workspace/`；需要安装 Python Playwright 及其 Chromium。
 
 Web 接口测试使用隔离目录和本地文件服务，验证真实下载与文件取回、暂停 / 继续 / 取消、队列并发、HAR 导入、缓存隐私、输入与访问边界、服务重启恢复。DOM 测试验证按钮、主题、筛选、课程重叠与不连续节次、导入 / 导出、失败后数据保留和 HTML 转义；linkedom 仅作为测试依赖，运行 Web 服务不需要 Node.js。

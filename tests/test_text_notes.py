@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from text_notes import TextNotesStore, read_text_file
 from text_notes_page import TextNotesPage
@@ -38,7 +38,8 @@ class TextNotesTest(unittest.TestCase):
         restored = TextNotesPage(self.page.config_path)
         self.assertEqual(restored.editor.toPlainText(), '离线内容 ☀\n第二行')
         restored.stop(); restored.deleteLater()
-        self.page.delete_note()
+        with patch('text_notes_page.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.page.delete_note()
         self.assertFalse(path.exists()); self.assertEqual(self.page.notes.count(), 0)
         self.assertEqual(next((path.parent/'.trash').glob('*.txt')).read_text(encoding='utf-8'), '离线内容 ☀\n第二行')
 

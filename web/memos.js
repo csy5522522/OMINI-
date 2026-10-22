@@ -1,129 +1,212 @@
 'use strict';
-let memos=[], memoCurrent=null, memoDirty=false, memoTimer, memoBusy=false, memoTrash=false, memoLoading=false, memoLoaded=false;
-const memoAssets=new Map();
-const memoEl=id=>document.getElementById(id);
-const memoStatus=text=>{memoEl('memo-status').textContent=text;};
+let memos=[],memoCurrent=null,memoDirty=false,memoTimer,memoBusy=false,memoTrash=false,memoLoading=false,memoLoaded=false,memoComposing=false,memoOperation=0;
+let memoImagePoint=null;
+const memoAssets=new Map(),memoEl=id=>document.getElementById(id);
+const memoEditor=OminiMemoEditor.create(memoEl('memo-content'),{
+  loadAsset:memoAsset,onChange:editedMemo,onImage:insertMemoImage,
+  onComposition(value){memoComposing=value;if(value)clearTimeout(memoTimer);else if(memoDirty)memoTimer=setTimeout(saveMemo,900);}
+});
+function memoStatus(text,state='saved'){
+  memoEl('memo-status').textContent=text;memoEl('memo-status').title=text;
+  document.querySelector('.memo-main').dataset.state=state;
+}
+function memoNotice(text='',conflict=false,retry=false){
+  memoEl('memo-notice').hidden=!text;memoEl('memo-notice-text').textContent=text;
+  memoEl('memo-save-copy').hidden=!conflict;memoEl('memo-retry').hidden=!retry;
+}
 function memoDraftKey(){return `omini-memo-draft:${auth.user?.id||'guest'}`;}
 function persistMemoDraft(){
   if(!memoCurrent||!memoDirty)return;
-  try{localStorage.setItem(memoDraftKey(),JSON.stringify({...memoCurrent,title:memoEl('memo-title').value,content:memoEl('memo-content').value}));}catch(_){}
+  try{localStorage.setItem(memoDraftKey(),JSON.stringify({...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()}));}catch(_){memoNotice('浏览器草稿空间已满，请保持页面打开并重试保存。',false,true);}
 }
+function closeMemoMenu(){memoEl('memo-menu').hidden=true;memoEl('memo-more').setAttribute('aria-expanded','false');}
 function resetMemos(){
-  persistMemoDraft();clearTimeout(memoTimer);memos=[];memoCurrent=null;memoDirty=false;memoLoaded=false;memoAssets.clear();renderMemoList();showMemo(null);
+  persistMemoDraft();clearTimeout(memoTimer);memoOperation++;memoBusy=false;memoLoading=false;
+  memos=[];memoCurrent=null;memoDirty=false;memoLoaded=false;memoComposing=false;memoTrash=false;memoAssets.clear();
+  memoEl('memo-search').value='';memoEl('memo-workbench').classList.remove('show-document');showMemo(null,false);
+}
+function memoSnippet(content){return content.replace(/!\[([^\]\n]*)\]\(omini-asset:\/\/[a-f0-9]{64}\)/g,' [图片] ').replace(/\s+/g,' ').trim();}
+function memoDate(timestamp){
+  const date=new Date(timestamp*1000),today=new Date();
+  return date.toDateString()===today.toDateString()?`今天 ${date.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:date.toLocaleDateString('zh-CN',{month:'short',day:'numeric'});
 }
 function renderMemoList(){
-  const root=memoEl('memo-list');root.replaceChildren();const query=memoEl('memo-search').value.toLowerCase();
+  const root=memoEl('memo-list'),scroll=root.scrollTop;root.replaceChildren();
+  const query=memoEl('memo-search').value.toLowerCase().trim();
+  memoEl('memo-count').textContent=memos.filter(m=>!m.deleted).length;
+  memoEl('memo-trash-count').textContent=memos.filter(m=>m.deleted).length;
+  for(const [id,selected] of [['memo-active',!memoTrash],['memo-trash',memoTrash]]){
+    memoEl(id).classList.toggle('selected',selected);memoEl(id).setAttribute('aria-pressed',String(selected));
+  }
   const visible=memos.filter(m=>Boolean(m.deleted)===memoTrash&&`${m.title}\n${m.content}`.toLowerCase().includes(query));
-  visible.forEach(m=>{
-    const b=document.createElement('button');b.className='memo-item'+(memoCurrent?.id===m.id?' selected':'');
-    const title=document.createElement('strong');title.textContent=m.title;b.append(title);
-    const detail=document.createElement('small');detail.textContent=`v${m.version} · ${new Date(m.updated*1000).toLocaleString('zh-CN')}`;b.append(detail);
-    b.addEventListener('click',async()=>{if(memoDirty&&!await saveMemo())return;showMemo(m);});root.append(b);
-  });
-  if(!visible.length){const p=document.createElement('p');p.className='muted';p.textContent=memoTrash?'回收站为空':'还没有备忘录';root.append(p);}
+  for(const memo of visible){
+    const button=document.createElement('button');button.className='memo-item'+(memoCurrent?.id===memo.id?' selected':'');button.setAttribute('aria-current',String(memoCurrent?.id===memo.id));
+    const title=document.createElement('strong');title.textContent=memo.title;
+    const snippet=document.createElement('span');snippet.className='memo-snippet';snippet.textContent=memoSnippet(memo.content)||'空白备忘录';
+    const date=document.createElement('small');date.textContent=memoDate(memo.updated);date.title=new Date(memo.updated*1000).toLocaleString('zh-CN');
+    button.append(title,snippet,date);button.addEventListener('click',async()=>{
+      if(memoDirty&&!await saveMemo())return;
+      showMemo(memos.find(m=>m.id===memo.id)||memo);
+    });root.append(button);
+  }
+  if(!visible.length){const p=document.createElement('p');p.className='memo-list-empty';p.textContent=query?'没有匹配的备忘录':memoTrash?'回收站为空':'还没有备忘录\n点击 + 记录第一个想法';root.append(p);}
+  root.scrollTop=scroll;
 }
-function showMemo(m){
-  memoCurrent=m?{...m}:null;memoDirty=false;
-  memoEl('memo-title').value=m?.title||'';memoEl('memo-content').value=m?.content||'';
-  for(const id of ['memo-title','memo-content','memo-save','memo-delete'])memoEl(id).disabled=!m||Boolean(m.deleted);
-  memoEl('memo-image').disabled=!m||Boolean(m.deleted);memoEl('memo-history').disabled=!m;
-  memoEl('memo-restore').hidden=!m?.deleted;memoEl('memo-save-copy').hidden=true;
-  memoStatus(m?`已同步 · v${m.version} · ${new Date(m.updated*1000).toLocaleString('zh-CN')}`:'选择或新建备忘录。');
-  renderMemoList();renderMemoPreview();
+function showMemo(memo,openDocument=true){
+  clearTimeout(memoTimer);closeMemoMenu();memoCurrent=memo?{...memo}:null;memoDirty=false;
+  memoEl('memo-title').value=memo?.title||'';memoEditor.loadContent(memo?.content||'');memoEditor.setReadOnly(!memo||Boolean(memo.deleted));
+  for(const id of ['memo-title','memo-save','memo-delete','memo-image','memo-image-button'])memoEl(id).disabled=!memo||Boolean(memo.deleted);
+  memoEl('memo-history').disabled=!memo;memoEl('memo-more').disabled=!memo;
+  memoEl('memo-restore').hidden=!memo?.deleted;memoEl('memo-empty').hidden=Boolean(memo);
+  document.querySelector('.memo-main').classList.toggle('is-blank',!memo);
+  memoEl('memo-document-kind').textContent=memo?.deleted?'RECYCLE BIN':'PERSONAL NOTE';
+  memoEl('memo-workbench').classList.toggle('show-document',Boolean(memo)&&openDocument);
+  document.querySelector('.memo-document-scroll').scrollTop=0;
+  memoStatus(memo?memo.deleted?'回收站 · 内容与历史均已保留':`已同步 · ${memoDate(memo.updated)}`:'选择或新建备忘录');
+  memoNotice();renderMemoList();
 }
 async function loadMemos(force=false){
-  if(!auth.user||!features.notes||memoLoading||memoBusy||memoDirty||memoLoaded&&!force)return;
+  if(!auth.user||!features.notes||memoLoading||memoBusy||memoDirty||memoComposing||memoLoaded&&!force)return;
   memoLoading=true;const generation=authGeneration;
   try{
-    const data=await api('/api/memos');if(generation!==authGeneration)return;memos=data.memos;memoLoaded=true;
+    const data=await api('/api/memos');if(generation!==authGeneration)return;
+    // The user may start typing while the listing request is in flight.
+    if(memoDirty||memoBusy||memoComposing)return;
+    memos=data.memos;memoLoaded=true;
     let draft=null;try{draft=JSON.parse(localStorage.getItem(memoDraftKey())||'null');}catch(_){}
-    if(draft&&!memoCurrent){
-      const server=memos.find(m=>m.id===draft.id);showMemo(server||draft);
-      memoEl('memo-title').value=draft.title;memoEl('memo-content').value=draft.content;memoDirty=true;
-      if(server&&server.version!==draft.version){memoCurrent.version=draft.version;memoEl('memo-save-copy').hidden=false;memoStatus('已恢复本机未保存编辑，服务器已有新版本。可保存为副本。');}
-      else{memoStatus('已恢复上次未保存编辑，请点击保存。');}
-      renderMemoPreview();
-    }else if(memoCurrent){const current=memos.find(m=>m.id===memoCurrent.id);if(current&&current.version!==memoCurrent.version)showMemo(current);else renderMemoList();}
-    else{renderMemoList();if(force&&memos.length)showMemo(memos.find(m=>!m.deleted)||null);}
-  }catch(e){if(generation===authGeneration)memoStatus(e.message);}finally{memoLoading=false;}
+    if(draft&&typeof draft.content==='string'&&typeof draft.title==='string'&&!memoCurrent){
+      const server=memos.find(m=>m.id===draft.id);showMemo({...draft,deleted:false});memoDirty=true;
+      if(server&&server.version!==draft.version){memoNotice('已恢复本机草稿，云端已有新版本。请保存冲突副本以保留两份内容。',true);memoStatus('存在版本冲突','error');}
+      else{memoNotice('已恢复上次未保存的草稿，可继续编辑或点击重试保存。',false,true);memoStatus('本机草稿待保存','editing');}
+    }else if(memoCurrent){
+      const current=memos.find(m=>m.id===memoCurrent.id);
+      if(current&&current.version!==memoCurrent.version){
+        const scroll=document.querySelector('.memo-document-scroll').scrollTop,selection=memoEditor.view.state.selection;
+        const wasOpen=memoEl('memo-workbench').classList.contains('show-document');showMemo(current,wasOpen);
+        memoEditor.restoreSelection(selection.from,selection.to);document.querySelector('.memo-document-scroll').scrollTop=scroll;
+      }else renderMemoList();
+    }else{renderMemoList();if(force&&memos.length)showMemo(memos.find(m=>Boolean(m.deleted)===memoTrash)||null,false);}
+  }catch(error){if(generation===authGeneration){memoStatus('同步暂未完成','error');memoNotice(error.message);}}
+  finally{if(generation===authGeneration)memoLoading=false;}
 }
 function editedMemo(){
-  if(!memoCurrent)return;memoDirty=true;persistMemoDraft();clearTimeout(memoTimer);
-  memoStatus('正在编辑，稍后自动保存…');memoTimer=setTimeout(saveMemo,900);renderMemoPreview();
+  if(!memoCurrent||memoCurrent.deleted)return;
+  memoDirty=true;persistMemoDraft();clearTimeout(memoTimer);memoStatus('正在编辑 · 自动保存','editing');
+  if(!memoComposing&&!memoEditor.isComposing())memoTimer=setTimeout(saveMemo,900);
 }
 async function saveMemo(){
+  if(memoComposing||memoEditor.isComposing()){clearTimeout(memoTimer);memoTimer=setTimeout(saveMemo,900);return false;}
   if(!memoCurrent||!memoDirty)return true;if(memoBusy)return false;
-  clearTimeout(memoTimer);memoBusy=true;const generation=authGeneration;
-  const current={...memoCurrent,title:memoEl('memo-title').value,content:memoEl('memo-content').value};
+  clearTimeout(memoTimer);memoBusy=true;const generation=authGeneration,operation=++memoOperation;
+  const current={...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()};
+  memoStatus('正在保存…','saving');
   try{
     const result=await api('/api/memos',{id:current.id,title:current.title,content:current.content,deleted:Boolean(current.deleted),base_version:current.version});
-    if(generation!==authGeneration)return false;
+    if(generation!==authGeneration||memoCurrent?.id!==current.id)return false;
     memoCurrent=result.memo;memos=[result.memo,...memos.filter(m=>m.id!==result.memo.id)];
-    if(memoEl('memo-title').value===current.title&&memoEl('memo-content').value===current.content){memoDirty=false;try{localStorage.removeItem(memoDraftKey());}catch(_){}}
-    else{persistMemoDraft();memoTimer=setTimeout(saveMemo,900);}
-    memoStatus(`已同步 · v${result.memo.version} · ${new Date().toLocaleTimeString('zh-CN')}`);renderMemoList();return !memoDirty;
-  }catch(e){
-    if(generation===authGeneration){persistMemoDraft();memoStatus(e.status===409?'服务器已有更新；你的编辑仍保留，请保存冲突副本。':`${e.message} 编辑已暂存在本机，请稍后保存。`);memoEl('memo-save-copy').hidden=e.status!==409;}
+    if(memoEl('memo-title').value===current.title&&memoEditor.getContent()===current.content){
+      memoDirty=false;try{localStorage.removeItem(memoDraftKey());}catch(_){}memoNotice();memoStatus(`已同步 · ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`);
+    }else{persistMemoDraft();memoTimer=setTimeout(saveMemo,900);memoStatus('正在编辑 · 自动保存','editing');}
+    renderMemoList();return !memoDirty;
+  }catch(error){
+    if(generation===authGeneration){persistMemoDraft();memoStatus(error.status===409?'存在版本冲突':'草稿已保留在本机','error');memoNotice(error.status===409?'云端已有更新，你的编辑已保留。请保存冲突副本。':`${error.message} 编辑已暂存在本机，请稍后重试。`,error.status===409,error.status!==409);}
     return false;
-  }finally{memoBusy=false;}
+  }finally{if(operation===memoOperation)memoBusy=false;}
 }
 async function memoAsset(id){
-  if(!memoAssets.has(id)){const a=await api(`/api/memos/assets/${id}`);memoAssets.set(id,`data:${a.mime};base64,${a.data}`);}
+  if(!memoAssets.has(id)){
+    const generation=authGeneration;
+    const promise=api(`/api/memos/assets/${id}`).then(asset=>{
+      if(generation!==authGeneration)throw new Error('账号已切换');
+      if(!['image/png','image/jpeg','image/gif','image/webp'].includes(asset.mime))throw new Error('图片格式有误');
+      return `data:${asset.mime};base64,${asset.data}`;
+    });memoAssets.set(id,promise);
+    promise.catch(()=>{if(memoAssets.get(id)===promise)memoAssets.delete(id);});
+  }
   return memoAssets.get(id);
 }
-async function renderMemoPreview(){
-  const root=memoEl('memo-preview');root.replaceChildren();const content=memoEl('memo-content').value;
-  const regex=/!\[([^\]\n]*)\]\(omini-asset:\/\/([a-f0-9]{64})\)/g;let start=0,match;
-  const text=value=>{const span=document.createElement('span');span.textContent=value;root.append(span);};
-  while((match=regex.exec(content))){
-    text(content.slice(start,match.index));start=regex.lastIndex;
-    const img=document.createElement('img');img.alt=match[1]||'备忘录图片';root.append(img);
-    const generation=authGeneration;
-    memoAsset(match[2]).then(src=>{if(generation===authGeneration&&img.isConnected)img.src=src;}).catch(()=>{img.alt='图片暂未加载，请稍后重试';});
-  }
-  text(content.slice(start));
+async function switchMemoFolder(trash){
+  if(memoDirty&&!await saveMemo())return;
+  memoTrash=trash;showMemo(null,false);
+}
+async function newMemo(){
+  if(memoDirty&&!await saveMemo())return;
+  const generation=authGeneration;
+  try{const result=await api('/api/memos',{title:'未命名备忘录',content:'',base_version:0});if(generation!==authGeneration)return;memos.unshift(result.memo);memoTrash=false;memoEl('memo-search').value='';showMemo(result.memo);memoEl('memo-title').focus();memoEl('memo-title').select();}
+  catch(error){memoNotice(error.message);memoStatus('新建暂未完成','error');}
+}
+async function changeMemoDeleted(deleted){
+  if(!memoCurrent||memoBusy)return;if(memoDirty&&!await saveMemo())return;
+  if(deleted&&!confirm('移到回收站？内容和全部历史版本仍可恢复。'))return;
+  const generation=authGeneration,id=memoCurrent.id;
+  try{const result=await api('/api/memos',{...memoCurrent,deleted,base_version:memoCurrent.version});if(generation!==authGeneration)return;memos=memos.map(m=>m.id===result.memo.id?result.memo:m);memoTrash=deleted;showMemo(memoCurrent?.id===id?result.memo:memoCurrent);}
+  catch(error){memoNotice(error.message);}
+}
+async function insertMemoImage(file,point){
+  if(!memoCurrent||memoCurrent.deleted||!file)return;
+  const bookmark=point||memoEditor.bookmark(),memoId=memoCurrent.id,generation=authGeneration;
+  try{
+    if(file.size>10*1024*1024)throw new Error('图片最大为 10 MB。');
+    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('图片读取失败，请重新选择。'));reader.readAsDataURL(file);});
+    const asset=await api('/api/memos/assets',{name:file.name||'粘贴图片.png',data});
+    if(generation!==authGeneration||memoId!==memoCurrent?.id)return;
+    memoEditor.insertImage(asset,bookmark);
+  }catch(error){if(generation===authGeneration&&memoId===memoCurrent?.id)memoNotice(error.message);}
+  finally{memoEditor.releaseBookmark(bookmark);}
 }
 memoEl('memo-search').addEventListener('input',renderMemoList);
-memoEl('memo-active').addEventListener('click',()=>{memoTrash=false;renderMemoList();});
-memoEl('memo-trash').addEventListener('click',()=>{memoTrash=true;renderMemoList();});
-memoEl('memo-title').addEventListener('input',editedMemo);memoEl('memo-content').addEventListener('input',editedMemo);
-memoEl('memo-save').addEventListener('click',saveMemo);
-memoEl('memo-new').addEventListener('click',async()=>{
-  if(memoDirty&&!await saveMemo())return;
-  try{const result=await api('/api/memos',{title:'未命名备忘录',content:'',base_version:0});memos.unshift(result.memo);memoTrash=false;showMemo(result.memo);memoEl('memo-title').focus();memoEl('memo-title').select();}catch(e){memoStatus(e.message);}
-});
+memoEl('memo-active').addEventListener('click',()=>switchMemoFolder(false));memoEl('memo-trash').addEventListener('click',()=>switchMemoFolder(true));
+memoEl('memo-title').addEventListener('input',editedMemo);
+memoEl('memo-title').addEventListener('compositionstart',()=>{memoComposing=true;clearTimeout(memoTimer);});
+memoEl('memo-title').addEventListener('compositionend',()=>{memoComposing=false;if(memoDirty)memoTimer=setTimeout(saveMemo,900);});
+for(const id of ['memo-save','memo-retry'])memoEl(id).addEventListener('click',()=>{closeMemoMenu();saveMemo();});
+for(const id of ['memo-new','memo-empty-new'])memoEl(id).addEventListener('click',newMemo);
+memoEl('memo-delete').addEventListener('click',()=>{closeMemoMenu();changeMemoDeleted(true);});memoEl('memo-restore').addEventListener('click',()=>changeMemoDeleted(false));
 memoEl('memo-save-copy').addEventListener('click',async()=>{
-  if(!memoCurrent)return;
-  try{const result=await api('/api/memos',{title:(memoEl('memo-title').value+'（冲突副本）').slice(0,240),content:memoEl('memo-content').value,base_version:0});try{localStorage.removeItem(memoDraftKey());}catch(_){}memos.unshift(result.memo);showMemo(result.memo);memoStatus('冲突编辑已保存为独立备忘录，原记录继续保留。');}catch(e){memoStatus(e.message);}
+  if(!memoCurrent||memoBusy)return;clearTimeout(memoTimer);const generation=authGeneration,id=memoCurrent.id;
+  const originalTitle=memoEl('memo-title').value,title=(originalTitle+'（冲突副本）').slice(0,240),content=memoEditor.getContent();
+  memoBusy=true;const operation=++memoOperation;
+  try{
+    const result=await api('/api/memos',{title,content,base_version:0});if(generation!==authGeneration)return;
+    memos.unshift(result.memo);
+    if(memoCurrent?.id===id&&memoEditor.getContent()===content&&memoEl('memo-title').value===originalTitle){try{localStorage.removeItem(memoDraftKey());}catch(_){}showMemo(result.memo);memoStatus('冲突副本已保存');}
+    else{persistMemoDraft();memoNotice('已保存一份冲突副本。刚刚继续输入的编辑仍保留在当前草稿。',true);renderMemoList();}
+  }catch(error){if(generation===authGeneration)memoNotice(error.message,true);}
+  finally{if(operation===memoOperation)memoBusy=false;}
 });
-async function changeMemoDeleted(deleted){
-  if(!memoCurrent)return;if(memoDirty&&!await saveMemo())return;
-  if(deleted&&!confirm('移到回收站？内容和全部历史版本仍可恢复。'))return;
-  try{const result=await api('/api/memos',{...memoCurrent,deleted,base_version:memoCurrent.version});memos=memos.map(m=>m.id===result.memo.id?result.memo:m);showMemo(result.memo);}catch(e){memoStatus(e.message);}
-}
-memoEl('memo-delete').addEventListener('click',()=>changeMemoDeleted(true));memoEl('memo-restore').addEventListener('click',()=>changeMemoDeleted(false));
-async function insertMemoImage(file){
-  if(!memoCurrent||memoCurrent.deleted||!file)return;if(file.size>10*1024*1024){memoStatus('图片最大为 10 MB。');return;}
-  const reader=new FileReader();reader.onload=async()=>{
-    const memoId=memoCurrent?.id,generation=authGeneration;
-    try{const asset=await api('/api/memos/assets',{name:file.name||'粘贴图片.png',data:String(reader.result).split(',')[1]});
-      if(generation!==authGeneration||memoId!==memoCurrent?.id)return;
-      const area=memoEl('memo-content');area.setRangeText(`\n![${asset.name.replace(/[\]\n]/g,'_')}](omini-asset://${asset.id})\n`,area.selectionStart,area.selectionEnd,'end');editedMemo();
-    }catch(e){memoStatus(e.message);}
-  };reader.readAsDataURL(file);
-}
-memoEl('memo-image').addEventListener('change',e=>{insertMemoImage(e.target.files[0]);e.target.value='';});
-memoEl('memo-content').addEventListener('paste',e=>{const file=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));if(file){e.preventDefault();insertMemoImage(file);}});
+memoEl('memo-image-button').addEventListener('click',()=>{if(memoImagePoint)memoEditor.releaseBookmark(memoImagePoint);memoImagePoint=memoEditor.bookmark();memoEl('memo-image').click();});
+memoEl('memo-image').addEventListener('change',event=>{insertMemoImage(event.target.files[0],memoImagePoint);memoImagePoint=null;event.target.value='';});
+memoEl('memo-image').addEventListener('cancel',()=>{if(memoImagePoint)memoEditor.releaseBookmark(memoImagePoint);memoImagePoint=null;});
+memoEl('memo-more').addEventListener('click',()=>{const opening=memoEl('memo-menu').hidden;memoEl('memo-menu').hidden=!opening;memoEl('memo-more').setAttribute('aria-expanded',String(opening));if(opening)memoEl('memo-menu').querySelector('button:not(:disabled)')?.focus();});
+document.addEventListener('click',event=>{if(!event.target.closest('.memo-more-wrap'))closeMemoMenu();});
+memoEl('memo-menu').addEventListener('keydown',event=>{
+  const items=[...memoEl('memo-menu').querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);
+  if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length;items[next]?.focus();}
+});
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&!memoEl('memo-menu').hidden){closeMemoMenu();memoEl('memo-more').focus();}
+  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'&&location.hash==='#notes'){event.preventDefault();saveMemo();}
+});
+memoEl('memo-back').addEventListener('click',()=>memoEl('memo-workbench').classList.remove('show-document'));
 memoEl('memo-history').addEventListener('click',async()=>{
-  if(!memoCurrent)return;if(memoDirty&&!await saveMemo())return;
-  const id=memoCurrent.id;
-  try{const result=await api(`/api/memos/${id}/history`);const root=memoEl('memo-versions');root.replaceChildren();
-    const labels={create:'新建',edit:'编辑',delete:'删除',restore:'恢复',rollback:'回滚'};
-    for(const v of result.versions){const box=document.createElement('article');box.className='memo-version';const heading=document.createElement('strong');heading.textContent=`v${v.version} · ${labels[v.action]||v.action} · ${v.device} · ${new Date(v.created*1000).toLocaleString('zh-CN')}`;box.append(heading);const pre=document.createElement('pre');pre.textContent=v.title+'\n'+v.content;box.append(pre);const button=document.createElement('button');button.className='button compact';button.textContent='回滚到此版本';button.addEventListener('click',async()=>{
-      if(memoCurrent?.id!==id||!confirm('创建一个恢复此内容的新版本？当前版本仍保留。'))return;
-      try{const restored=await api(`/api/memos/${id}/restore`,{version:v.version,base_version:memoCurrent.version});memos=memos.map(m=>m.id===id?restored.memo:m);showMemo(restored.memo);memoEl('memo-history-dialog').close();}catch(e){toast(e.message,true);}
-    });box.append(button);root.append(box);}showDialog('memo-history-dialog');
-  }catch(e){memoStatus(e.message);}
+  closeMemoMenu();if(!memoCurrent)return;if(memoDirty&&!await saveMemo())return;
+  const id=memoCurrent.id,generation=authGeneration;
+  try{
+    const result=await api(`/api/memos/${id}/history`);if(generation!==authGeneration||memoCurrent?.id!==id)return;
+    const root=memoEl('memo-versions');root.replaceChildren();
+    const labels={create:'新建',edit:'编辑',delete:'删除',restore:'恢复',rollback:'回滚',rename:'重命名',sync:'同步'};
+    for(const version of result.versions){
+      const box=document.createElement('article');box.className='memo-version';
+      const heading=document.createElement('strong');heading.textContent=`v${version.version} · ${labels[version.action]||version.action} · ${version.device} · ${new Date(version.created*1000).toLocaleString('zh-CN')}`;
+      const pre=document.createElement('pre');pre.textContent=version.title+'\n'+version.content;
+      const button=document.createElement('button');button.className='button compact';button.textContent='回滚到此版本';
+      button.addEventListener('click',async()=>{
+        if(memoCurrent?.id!==id||!confirm('创建一个恢复此内容的新版本？当前版本仍保留。'))return;
+        try{const restored=await api(`/api/memos/${id}/restore`,{version:version.version,base_version:memoCurrent.version});if(generation!==authGeneration)return;memos=memos.map(m=>m.id===id?restored.memo:m);memoTrash=Boolean(restored.memo.deleted);showMemo(restored.memo);memoEl('memo-history-dialog').close();}catch(error){toast(error.message,true);}
+      });box.append(heading,pre,button);root.append(box);
+    }showDialog('memo-history-dialog');
+  }catch(error){if(generation===authGeneration)memoNotice(error.message);}
 });
-window.addEventListener('beforeunload',e=>{if(memoDirty){persistMemoDraft();e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(memoDirty){persistMemoDraft();event.preventDefault();event.returnValue='';}});
 setInterval(()=>{if(!document.hidden&&location.hash==='#notes'&&auth.user)loadMemos(true);},15000);
+showMemo(null,false);

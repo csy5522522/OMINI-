@@ -281,6 +281,8 @@ class Handler(BaseHTTPRequestHandler):
             assets = {"/": ("index.html", "text/html; charset=utf-8"),
                       "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/memos.js": ("memos.js", "text/javascript; charset=utf-8"),
+                      "/memo-editor.js": ("memo-editor.js", "text/javascript; charset=utf-8"),
+                      "/memos.css": ("memos.css", "text/css; charset=utf-8"),
                       "/admin": ("admin.html", "text/html; charset=utf-8"),
                       "/admin/": ("admin.html", "text/html; charset=utf-8"),
                       "/admin.js": ("admin.js", "text/javascript; charset=utf-8"),

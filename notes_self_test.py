@@ -16,7 +16,7 @@ def run_notes_test(app_module):
     outcome = [1]
 
     def finish():
-        result['plain_txt_saved'] = page.flush() and read_text_file(path)[0] == page.editor.toPlainText()
+        result['plain_txt_saved'] = page.flush() and read_text_file(path)[0] == page.editor.get_content()
         window.grab().save(str(app_module.APP_DIR / "notes-dark.png"))
         window.theme_button.click()
         result['theme_button'] = not page.dark and window.settings_page.theme.currentText() == "浅色"

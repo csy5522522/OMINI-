@@ -128,6 +128,8 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.get("/favicon.ico").status_code, 200)
         self.assertEqual(self.get("/app.js").status_code, 200)
         self.assertEqual(self.get("/style.css").status_code, 200)
+        for resource in ("/memos.css", "/memo-editor.js"):
+            self.assertEqual(self.get(resource).status_code, 200)
         self.assertEqual(self.get("/web_server.py").status_code, 404)
 
     def test_02_real_download_and_retrieve(self):

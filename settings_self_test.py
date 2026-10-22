@@ -91,7 +91,9 @@ def run_settings_test(app_module):
             from PIL import Image
             picture = io.BytesIO(); Image.new("RGB", (320, 90), "#39816c").save(picture, "PNG")
             page.insert_raw_image(picture.getvalue(), "验收图片.png")
-            assert "omini-asset://" in page.editor.toPlainText()
+            assert "omini-asset://" in page.editor.get_content()
+            from memo_editor import IMAGE_OBJECT
+            assert page.editor.document().documentLayout().handlerForObject(IMAGE_OBJECT) is not None
             page.sync_now(); until(lambda: page.worker is None, "Memo image upload timed out")
             api_client = AccountClient(panel.url, panel.token)
             memo = api_client.api("/api/memos")["memos"][0]

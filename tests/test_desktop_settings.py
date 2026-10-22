@@ -79,7 +79,7 @@ class DesktopSettingsTests(unittest.TestCase):
         note = page.store.create("账号图片备忘录", "第一稿"); page.refresh_files(note.name)
         raw = io.BytesIO(); Image.new("RGB", (32, 20), "red").save(raw, "PNG")
         page.insert_raw_image(raw.getvalue(), "图片.png")
-        self.assertIn("omini-asset://", page.editor.toPlainText())
+        self.assertIn("omini-asset://", page.editor.get_content())
         page.sync_now(); self.until(lambda: page.worker is None)
         client = AccountClient(panel.url, panel.token)
         remote = client.api("/api/memos")["memos"]

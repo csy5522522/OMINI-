@@ -52,6 +52,9 @@ Source: "安装版使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Remove obsolete application runtimes on upgrade. User data is under APPDATA.
 [InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal\omini_api"
+Type: files; Name: "{app}\_internal\omini_api*.py*"
+Type: files; Name: "{app}\_internal\brightdata*.py*"
 Type: files; Name: "{app}\tools\ffmpeg*"
 Type: files; Name: "{app}\tools\ffprobe.exe"
 Type: files; Name: "{app}\tools\ffplay.exe"

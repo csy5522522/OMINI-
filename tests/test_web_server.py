@@ -58,7 +58,7 @@ class WebServerTests(unittest.TestCase):
         access_password = getattr(cls, "access_password", "OminiTestOnly-123456")
         env.update(PYTHONIOENCODING="utf-8", OMINI_WEB_PASSWORD=access_password)
         cls.process = subprocess.Popen(
-            [sys.executable, str(ROOT / "web_server.py"), "--port", "0", "--data-dir", str(cls.data), "--download-dir", str(cls.downloads)],
+            [sys.executable, str(ROOT / "web_server.py"), "--port", "0", "--data-dir", str(cls.data)],
             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
@@ -102,16 +102,6 @@ class WebServerTests(unittest.TestCase):
     def post(self, path, data, **kwargs):
         return self.session.post(self.url + path, json=data, headers={"X-Omini-Client": "web", **kwargs.pop("headers", {})}, timeout=8, **kwargs)
 
-    def wait_status(self, task_id, wanted):
-        end = time.monotonic() + 25
-        while time.monotonic() < end:
-            tasks = self.get("/api/state").json()["tasks"]
-            task = next(t for t in tasks if t["id"] == task_id)
-            if task["status"] in wanted:
-                return task
-            time.sleep(.1)
-        self.fail(f"Task did not reach {wanted}; last status {task}")
-
     def test_01_auth_and_request_boundaries(self):
         with requests.Session() as anonymous:
             anonymous.trust_env = False
@@ -132,37 +122,16 @@ class WebServerTests(unittest.TestCase):
             self.assertEqual(self.get(resource).status_code, 200)
         self.assertEqual(self.get("/web_server.py").status_code, 404)
 
-    def test_02_real_download_and_retrieve(self):
-        response = self.post("/api/tasks", {"type": "file", "source": self.source + "/sample.bin", "options": {"filename": "sample.bin"}})
-        self.assertEqual(response.status_code, 201, response.text)
-        task_id = response.json()["task"]["id"]
-        task = self.wait_status(task_id, {"completed", "failed"})
-        self.assertEqual(task["status"], "completed", self.get(f"/api/tasks/{task_id}/log").text)
-        files = self.get(f"/api/tasks/{task_id}/files").json()["files"]
-        self.assertEqual([f["name"] for f in files], ["sample.bin"])
-        downloaded = self.get(files[0]["url"])
-        self.assertEqual(hashlib.sha256(downloaded.content).digest(), hashlib.sha256(FILE_BYTES).digest())
-        self.assertIn("attachment;", downloaded.headers["Content-Disposition"])
-        # Path traversal, guessed tasks and symlinks cannot expose service data.
-        self.assertIn(self.get(f"/api/files/{task_id}/%2e%2e/%2e%2e/data/settings.json").status_code, {400, 404})
-        self.assertEqual(self.get("/api/tasks/not-a-task/files").status_code, 400)
-        self.assertTrue(Path(task["output_dir"]).is_relative_to(self.downloads))
-
-    def test_03_pause_resume_cancel_and_queue(self):
-        self.assertEqual(self.post("/api/settings", {"concurrency": 1}).status_code, 200)
-        first = self.post("/api/tasks", {"type": "file", "source": self.source + "/slow.bin"}).json()["task"]["id"]
-        self.wait_status(first, {"running"})
-        second = self.post("/api/tasks", {"type": "file", "source": self.source + "/queued.bin"}).json()["task"]["id"]
-        self.assertEqual(self.wait_status(second, {"queued"})["status"], "queued")
-        self.assertEqual(self.post(f"/api/tasks/{second}/pause", {}).status_code, 200)
-        self.assertEqual(self.wait_status(second, {"paused"})["status"], "paused")
-        self.post(f"/api/tasks/{first}/pause", {})
-        self.assertEqual(self.wait_status(first, {"paused"})["status"], "paused")
-        self.post(f"/api/tasks/{first}/resume", {})
-        self.wait_status(first, {"running"})
-        self.post(f"/api/tasks/{first}/cancel", {})
-        self.assertEqual(self.wait_status(first, {"cancelled"})["status"], "cancelled")
-        self.post(f"/api/tasks/{second}/cancel", {})
+    def test_02_download_center_removed(self):
+        for path in ("/api/tasks", "/api/tasks/fixture/files", "/api/tasks/fixture/log", "/api/files/fixture/file"):
+            self.assertEqual(self.get(path).status_code, 404)
+            self.assertEqual(self.post(path, {}).status_code, 404)
+        state = self.get("/api/state").json()
+        self.assertNotIn("downloads", state["features"])
+        for field in ("tasks", "engines", "download_dir", "concurrency"):
+            self.assertNotIn(field, state)
+        self.assertNotIn('id="page-downloads"', self.get("/").text)
+        self.assertFalse((self.data / "tasks.json").exists())
 
     def test_04_import_har_and_cache_privacy(self):
         payload = {"xsxx": {"XH": "PRIVATE_STUDENT", "XM": "PRIVATE_STUDENT_NAME"}, "kbList": [
@@ -184,22 +153,15 @@ class WebServerTests(unittest.TestCase):
         self.assertEqual(self.post("/api/timetable/import", {"content": "{}"}).status_code, 400)
         self.assertEqual(self.get("/api/timetable").json()["schedule"]["courses"], schedule["courses"])
 
-    def test_05_input_validation(self):
-        for source in ("file:///C:/Windows/win.ini", "--help", "javascript:alert(1)"):
-            self.assertEqual(self.post("/api/tasks", {"type": "file", "source": source}).status_code, 400)
-        for filename in ("../../escape.bin", "C:\\escape.bin", "bad\nfile"):
-            self.assertEqual(self.post("/api/tasks", {"type": "file", "source": self.source + "/sample.bin", "options": {"filename": filename}}).status_code, 400)
-        for concurrency in (0, 7, True, "2"):
-            self.assertEqual(self.post("/api/settings", {"concurrency": concurrency}).status_code, 400)
-        self.assertEqual(self.post("/api/timetable/refresh", {"cookie": "", "year": "2026", "term": "3"}).status_code, 400)
-
-    def test_06_restart_restores_queue_and_schedule(self):
-        before = self.get("/api/state").json()["tasks"]
-        schedule = self.get("/api/timetable").json()
-        type(self).stop()
-        type(self).start()
-        self.assertEqual(self.get("/api/state").json()["tasks"], before)
-        self.assertEqual(self.get("/api/timetable").json(), schedule)
+    def test_05_week_validation_and_restart(self):
+        for week in (-1, 61, True, "2"):
+            self.assertEqual(self.post("/api/timetable/week", {"selected_week": week}).status_code, 400)
+        for week in (0, 7):
+            self.assertEqual(self.post("/api/timetable/week", {"selected_week": week}).status_code, 200)
+            schedule = self.get("/api/timetable").json()
+            self.assertEqual(schedule["selected_week"], week)
+            type(self).stop(); type(self).start()
+            self.assertEqual(self.get("/api/timetable").json(), schedule)
 
     def test_07_email_registration_respects_service_password(self):
         value = {"email": "member@example.test", "password": "EmailPassword-123"}
@@ -276,13 +238,12 @@ class EmailWebTests(unittest.TestCase):
         self.assertEqual(self.get("/api/state").status_code, 200)
 
     def test_04_optional_features_persist_and_reenable(self):
-        response = self.post("/api/settings", {"features": {"downloads": False, "timetable": False}})
+        response = self.post("/api/settings", {"features": {"timetable": False}})
         self.assertEqual(response.status_code, 200, response.text)
         state = self.get("/api/state").json()
-        self.assertEqual(state["features"], {"downloads": False, "timetable": False, "notes": True, "ai_assistants": True})
-        self.assertEqual(state["tasks"], []); self.assertEqual(state["engines"], {})
+        self.assertEqual(state["features"], {"timetable": False, "notes": True, "ai_assistants": True})
         self.assertEqual(self.get("/api/timetable").status_code, 403)
-        self.assertEqual(self.post("/api/tasks", {"type": "file", "source": "https://example.test/a"}).status_code, 403)
+        self.assertEqual(self.post("/api/tasks", {"type": "file", "source": "https://example.test/a"}).status_code, 404)
         for features in ([], {"bad": True}, {"timetable": "false"}, {"downloads": 1}):
             self.assertEqual(self.post("/api/settings", {"features": features}).status_code, 400)
         token = self.session.cookies["omini_session"]
@@ -290,8 +251,7 @@ class EmailWebTests(unittest.TestCase):
         self.assertEqual(self.get("/api/state").json()["features"], state["features"])
         self.assertEqual(self.post("/api/settings", {"features": {"timetable": True}}).status_code, 200)
         self.assertEqual(self.get("/api/timetable").status_code, 200)
-        self.assertFalse(self.get("/api/state").json()["features"]["downloads"])
-        self.post("/api/settings", {"features": {"downloads": True}})
+        self.assertNotIn("downloads", self.get("/api/state").json()["features"])
 
     def test_05_login_throttling(self):
         type(self).stop(); type(self).start()

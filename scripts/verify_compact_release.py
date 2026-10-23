@@ -50,8 +50,11 @@ def main():
         forbidden = [p for p in release.rglob('*') if 'webengine' in p.name.lower()
                      or p.name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay'))]
         assert not forbidden, forbidden
-        checks = {'no_embedded_browser_or_ffmpeg': True}
-        for name in (() if args.skip_ui else ('ai-assistants', 'timetable', 'notes', 'omini-api')):
+        from PyInstaller.archive.readers import CArchiveReader
+        modules = CArchiveReader(str(executable)).open_embedded_archive('PYZ.pyz').toc
+        assert not any(name == 'omini_api' or name.startswith(('omini_api.', 'omini_api_', 'brightdata')) for name in modules)
+        checks = {'no_embedded_browser_or_ffmpeg': True, 'retired_modules_removed': True}
+        for name in (() if args.skip_ui else ('ai-assistants', 'timetable', 'notes')):
             target = root / f'{name}.json'
             env['OMINI_SELF_TEST_LOG'] = str(target)
             run([executable, '--self-test-' + name], env=env)
@@ -60,7 +63,7 @@ def main():
             data = json.loads(target.read_text(encoding='utf-8'))
             assert data.get('ok', True), data
             if name == 'notes':
-                assert data['plain_txt_saved'] and data['no_embedded_browser'], data
+                assert data['encrypted_notes_saved'] and data['no_embedded_browser'], data
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 for theme in ('dark', 'light'):
                     shutil.copy2(root / 'appdata/Omini工具箱' / f'notes-{theme}.png', args.report.parent / f'txt-notes-{theme}.png')

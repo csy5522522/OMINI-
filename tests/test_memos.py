@@ -14,7 +14,7 @@ from PIL import Image
 from account_client import AccountClient
 from memo_store import MemoStore, MemoConflict
 from memo_sync import sync_memos
-from text_notes import TextNotesStore
+from text_notes import TextNotesStore, read_text_file
 
 
 def image_data():
@@ -32,7 +32,7 @@ class MemoStorageTests(unittest.TestCase):
             self.assertNotEqual(old["id"], store.for_path(second)["id"])
             _, restored = store.write_snapshot({**old, "deleted": False}, "restore")
             self.assertNotEqual(restored, second)
-            self.assertEqual({p.read_text(encoding="utf-8") for p in store.files()}, {"旧记录", "新记录"})
+            self.assertEqual({read_text_file(p)[0] for p in store.files()}, {"旧记录", "新记录"})
 
     def test_versions_rollback_deletion_and_owner_isolation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,8 +60,7 @@ class MemoHTTPTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(); cls.root = Path(cls.temp.name)
         env = os.environ.copy(); env.update(OMINI_ADMIN_PASSWORD="admin123", OMINI_WEB_PASSWORD="", PYTHONIOENCODING="utf-8")
-        cls.process = subprocess.Popen([sys.executable, "web_server.py", "--port", "0", "--data-dir", str(cls.root / "server"),
-            "--download-dir", str(cls.root / "downloads")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cls.process = subprocess.Popen([sys.executable, "web_server.py", "--port", "0", "--data-dir", str(cls.root / "server")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         event = threading.Event(); lines = []
         def output():
@@ -106,7 +105,7 @@ class MemoHTTPTests(unittest.TestCase):
         remote = client.api("/api/memos")["memos"][0]
         self.assertEqual(len(client.api(f"/api/memos/{remote['id']}/history")["versions"]), 2)
         sync_memos(two.directory, self.url, client.token)
-        self.assertIn("第二稿", two.files()[0].read_text(encoding="utf-8"))
+        self.assertIn("第二稿", read_text_file(two.files()[0])[0])
         self.assertEqual(len(two.memos.history(two.owner, remote["id"])), 2)
         self.assertEqual(two.memos.asset(two.owner, asset["id"])["mime"], "image/png")
         one.save(path, "桌面离线修改", read_text_file(path)[1])
@@ -115,7 +114,7 @@ class MemoHTTPTests(unittest.TestCase):
         self.assertEqual(result["conflicts"], 1)
         texts = {m["content"] for m in client.api("/api/memos")["memos"]}
         self.assertEqual(texts, {"桌面离线修改", "网页更新"})
-        self.assertEqual({p.read_text(encoding="utf-8") for p in one.files()}, texts)
+        self.assertEqual({read_text_file(p)[0] for p in one.files()}, texts)
         rolled = client.api(f"/api/memos/{cloud['id']}/restore", {"version": 1, "base_version": cloud["version"]})["memo"]
         sync_memos(two.directory, self.url, client.token)
         self.assertEqual(two.memos.get(two.owner, cloud["id"])["content"], rolled["content"])

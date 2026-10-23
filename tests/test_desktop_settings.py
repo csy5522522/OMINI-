@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from text_notes import read_text_file
 import socket
 import subprocess
 import sys
@@ -87,12 +88,12 @@ class DesktopSettingsTests(unittest.TestCase):
         self.assertGreaterEqual(len(client.api(f"/api/memos/{remote[0]['id']}/history")["versions"]), 2)
         panel.logout_button.click(); self.until(lambda: panel.worker is None)
         self.assertEqual(page.store.directory, guest.parent)
-        self.assertEqual(guest.read_text(encoding="utf-8"), "仅保存在访客目录")
+        self.assertEqual(read_text_file(guest)[0], "仅保存在访客目录")
         register("second@example.test")
         self.assertEqual(page.store.files(), [])
         self.assertEqual(AccountClient(panel.url, panel.token).api("/api/memos")["memos"], [])
         self.assertNotEqual(page.store.directory, first_directory)
-        self.assertEqual(json.loads(page.config_path.read_text(encoding="utf-8"))["directory"], str(guest.parent))
+        self.assertEqual(json.loads(page.config_path.read_text(encoding='utf-8'))["directory"], str(guest.parent))
 
     def test_all_disabled_keeps_settings_account_theme_and_tray_usable(self):
         self.assertEqual(self.window.nav.currentRow(), 4)
@@ -102,7 +103,7 @@ class DesktopSettingsTests(unittest.TestCase):
                 self.assertTrue(self.window.nav.item(index).isHidden())
                 self.assertIsNone(getattr(self.window, self.window.page_attribute(feature)))
         self.window.open_ai_assistants(); self.assertEqual(self.window.nav.currentRow(), 4)
-        self.window.open_folder_sync(); self.window.open_omini_api(); self.window.login_campus()
+        self.window.open_folder_sync(); self.window.login_campus()
         self.window.open_account(); self.window.toggle_theme()
         self.assertTrue(all(not action.isVisible() for action in self.window.feature_tray_actions.values()))
 
@@ -119,7 +120,7 @@ class DesktopSettingsTests(unittest.TestCase):
         self.assertIsNone(self.window.notes_page)
         self.assertTrue(self.window.nav.item(3).isHidden())
         self.assertEqual(self.window.nav.currentRow(), 4)
-        self.assertEqual(path.read_text(encoding="utf-8"), "关闭功能后继续保留")
+        self.assertEqual(read_text_file(path)[0], "关闭功能后继续保留")
         checks["notes"].setChecked(True); self.save()
         self.assertIsNot(self.window.notes_page, page)
         self.assertEqual(self.window.notes_page.editor.toPlainText(), "关闭功能后继续保留")

@@ -144,7 +144,7 @@ class TimetableUiTest(unittest.TestCase):
             self.assertEqual(unprotect(config["session_blob"]), "JSESSIONID=PRIVATE_TOKEN")
             self.assertNotIn("PRIVATE_TOKEN", json.dumps(saved)); self.assertNotIn("PRIVATE_", cache.read_text())
             offline = TimetablePage(saved[-1], lambda _: None, cache, lambda _: None)
-            self.assertEqual(offline.list.rowCount(), 2); self.assertTrue(offline.use_start.isChecked())
+            self.assertEqual(offline.week.currentData(), 2); self.assertEqual(offline.list.rowCount(), 1); self.assertTrue(offline.use_start.isChecked())
             page.remember.setChecked(False); page.save(); self.assertEqual(saved[-1]["school_timetable"]["session_blob"], "")
             page.stop(); offline.stop(); page.close(); offline.close()
             page.deleteLater(); offline.deleteLater(); self.qt.processEvents()

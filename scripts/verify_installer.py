@@ -112,25 +112,19 @@ def main():
             run([str(app), "--self-test-notes"], environment)
             notes_root = Path(environment["APPDATA"]) / "Omini工具箱"
             notes_report = json.loads((notes_root / "notes-smoke.json").read_text(encoding="utf-8"))
-            assert notes_report["ok"] and notes_report["plain_txt_saved"]
-            note_file = next((notes_root / "text-notes").glob('*.txt'))
+            assert notes_report["ok"] and notes_report["encrypted_notes_saved"]
+            note_file = next((notes_root / "text-notes").glob('*.ominote'))
             note_original = note_file.read_bytes()
             legacy_cache = notes_root / "icloud-notes.json"
             legacy_cache.write_text('legacy-encrypted-cache-sentinel', encoding='utf-8')
-            report["installed_txt_smoke"] = True
+            report["installed_encrypted_notes_smoke"] = True
             run([str(app), "--self-test-settings"], environment)
             settings_report = json.loads((root / f"verification/settings-self-test-{version}.json").read_text(encoding="utf-8"))
             assert settings_report.get("ok") and settings_report.get("memo_images_sync_and_rollback")
             report["installed_account_memos_smoke"] = True
-            api_environment = environment.copy()
-            api_environment.pop("QT_QPA_PLATFORM", None)
-            api_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "api-check.json")
-            api_environment["OMINI_API_TEST_SCREENSHOT"] = str(root / "verification/installer-api.png")
-            run([str(app), "--self-test-omini-api"], api_environment)
-            api_report = json.loads((temp_root / "api-check.json").read_text(encoding="utf-8"))
-            assert api_report.get("ok") is True and len(api_report.get("tabs", [])) == 7
-            report["installed_api_smoke"] = True
-            ai_environment = api_environment.copy()
+            report["installed_desktop_smoke"] = True
+            ai_environment = environment.copy()
+            ai_environment.pop("QT_QPA_PLATFORM", None)
             ai_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "ai-check.json")
             ai_environment["OMINI_AI_CAPTURE_DIR"] = str(root / "verification" / ("installed-ai-" + version))
             run([str(app), "--self-test-ai-assistants"], ai_environment)
@@ -151,7 +145,7 @@ def main():
             state = AssistantState(ai_data); state.save({**state.data, "ui": {"tab": 4}, "quotas": {}})
             OperationHistory(ai_data).append("upgrade-and-uninstall-action-sentinel", "fixture.action")
             ai_original = {path.relative_to(ai_data): path.read_bytes() for path in ai_data.rglob('*') if path.is_file()}
-            obsolete = ["tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
+            obsolete = ["_internal/omini_api/runtime.py", "_internal/omini_api_page.py", "_internal/brightdata_page.py", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
                         "_internal/PySide6/Qt6WebEngineCore.dll", "_internal/PySide6/QtWebEngineCore.pyd",
                         "_internal/PySide6/QtWebEngineProcess.exe", "_internal/PySide6/resources/icudtl.dat",
                         "_internal/PySide6/translations/qtwebengine_locales/en-US.pak",

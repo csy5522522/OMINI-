@@ -77,7 +77,7 @@ def publish(make_public: bool = False) -> dict:
     verification = json.loads((ROOT / "verification/installer-report.json").read_text(encoding="utf-8"))
     if Path(verification["installer"]).resolve() != setup.resolve():
         raise RuntimeError("Verify this exact installer before publishing")
-    if not verification.get("installed_api_smoke") or not all(value is True for key, value in verification.items() if key != "installer"):
+    if not verification.get("installed_desktop_smoke") or not all(value is True for key, value in verification.items() if key != "installer"):
         raise RuntimeError("Installer verification must pass before publishing")
     notes = (ROOT / "releases" / (tag + ".md")).read_text(encoding="utf-8")
     upload_name = f"Omini-Toolbox-{APP_VERSION}-Setup.exe"

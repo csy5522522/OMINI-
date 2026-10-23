@@ -35,16 +35,13 @@ const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><
 function icons(root = document) { $$('[data-icon]', root).forEach(el => { el.outerHTML = icon(el.dataset.icon); }); }
 icons();
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let tasks = [], currentType = 'video', currentFilter = 'all', selectedWeek = 1;
+let selectedWeek = 0, savedSelectedWeek = 0;
 let timetableRevision = 0;
 let timetable = null, savedTimetable = null, firstMonday = '', demo = false, connected = false;
 let toastTimer, polling = false;
-let features = {downloads:true,timetable:true,notes:true,ai_assistants:true}, auth = {authenticated:false,user:null,access_password_required:false};
+let features = {timetable:true,notes:true,ai_assistants:true}, auth = {authenticated:false,user:null,access_password_required:false};
 let authMode = 'login', authGeneration = 0, timetableLoaded = false, timetableLoading = false;
 const terms = {3:'第一学期',12:'第二学期',16:'第三学期'};
-const statuses = {queued:'等待中',running:'下载中',completed:'已完成',paused:'已暂停',failed:'失败',cancelled:'已取消'};
-const typeNames = {video:'视频',audio:'音频',file:'文件',gallery:'图库',m3u8:'M3U8',torrent:'磁力链接',subtitle:'字幕',spotify:'Spotify 音频'};
-const typeIcons = {video:'play',audio:'music',file:'file',gallery:'image',m3u8:'play',torrent:'layers',subtitle:'file',spotify:'music'};
 const schoolLogin = 'https://sso.hualixy.edu.cn/heer_cas/#/login?service=https%3A%2F%2Fjw.hualixy.edu.cn%2Fsso%2Fddlogin';
 function toast(message, error = false) {
   const el = $('#toast'); el.textContent = message; el.classList.toggle('error', error); el.hidden = false;
@@ -65,15 +62,14 @@ function setConnection(ok) {
   connected = ok;
   $('#connection').classList.toggle('offline', !ok);
   $('#connection').innerHTML = `<i></i>${ok ? '服务已连接' : '服务未连接'}`;
-  $('#submit-download').disabled = !ok || !features.downloads;
 }
 function route() {
-  const wanted = ['timetable','notes','ai_assistants'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'downloads';
+  const wanted = ['timetable','notes','ai_assistants'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'timetable';
   const page = features[wanted] ? wanted : Object.keys(features).find(key=>features[key]) || 'workspace';
   if (location.hash !== `#${page}`) location.hash = `#${page}`;
   $$('.page').forEach(el => { el.hidden = el.id !== `page-${page}`; });
   $$('.nav-item[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
-  const title = {downloads:'下载中心',timetable:'学校课表',notes:'超级备忘录',ai_assistants:'AI 编程助手',workspace:'工作空间'}[page];
+  const title = {timetable:'学校课表',notes:'超级备忘录',ai_assistants:'AI 编程助手',workspace:'工作空间'}[page];
   $('#breadcrumb-page').textContent = title;
   document.title = `${title} · Omini`;
   if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();
@@ -81,12 +77,11 @@ function route() {
   if (page === 'ai_assistants' && connected && typeof loadAccountSync === 'function') loadAccountSync();
 }
 function applyFeatures(selected = features) {
-  for (const key of ['downloads','timetable','notes','ai_assistants']) {
+  for (const key of ['timetable','notes','ai_assistants']) {
     if (typeof selected[key] === 'boolean') features[key] = selected[key];
     $(`[data-page="${key}"]`).hidden = !features[key];
     if (!$('#settings-dialog').open) $(`#feature-${key}`).checked = features[key];
   }
-  $('.timetable-shortcut').hidden = !features.timetable;
   if (!features.timetable) timetableLoaded = false;
   route();
 }
@@ -140,11 +135,10 @@ $$('[data-auth-mode]').forEach(button=>button.addEventListener('click',()=>setAu
 function resetWorkspace() {
   if(typeof resetAccountSync==='function')resetAccountSync();
   if(typeof resetMemos==='function')resetMemos();
-  authGeneration++; timetableRevision=0; tasks=[]; timetable=null; savedTimetable=null; firstMonday=''; demo=false; timetableLoaded=false;
-  renderTasks(); updateWeekOptions(); renderTimetable(); setConnection(false);
-  $('#engine-list').innerHTML=''; $('#download-dir').textContent=''; $('#settings-dir').textContent='';
+  authGeneration++; timetableRevision=0; selectedWeek=0; savedSelectedWeek=0; timetable=null; savedTimetable=null; firstMonday=''; demo=false; timetableLoaded=false;
+  updateWeekOptions(); renderTimetable(); setConnection(false);
   $('#detail-content').textContent=''; $('#school-cookie').value='';
-  $('#detail-title').textContent=''; $('#source').value=''; $('#filename').value='';
+  $('#detail-title').textContent='';
 }
 function requireLogin() {
   resetWorkspace(); setAuth({...auth,authenticated:false,user:null});
@@ -173,84 +167,20 @@ $('#login-form').addEventListener('submit', async e => {
   catch (error) { $('#login-error').textContent=error.message; }
   finally { button.disabled=false; }
 });
-function setType(type) {
-  currentType=type;
-  $$('.type-tab').forEach(el => el.classList.toggle('selected', el.dataset.type === type));
-  $('#more-type').value = ['m3u8','torrent','subtitle','spotify'].includes(type) ? type : '';
-  $('#quality-field').hidden = type !== 'video';
-  $('#format-field').hidden = type !== 'audio';
-  $('#filename-field').hidden = !['file','m3u8'].includes(type);
-  $('#language-field').hidden = type !== 'subtitle';
-  $('#source').placeholder = type === 'subtitle' ? '粘贴视频链接，或输入字幕搜索关键词…' : type === 'torrent' ? '粘贴 magnet 磁力链接或 Torrent 文件直链…' : '粘贴视频、文件链接或分享文本…';
-  $('#type-hint').textContent = type === 'spotify' ? '由 spotDL 处理，输出格式由引擎选择。' : type === 'm3u8' ? '下载 HLS 分片，由 FFmpeg 合并为 MP4。' : '支持公开链接；需要登录的内容请使用桌面版。';
-}
-$$('.type-tab').forEach(el => el.addEventListener('click', () => setType(el.dataset.type)));
-$('#more-type').addEventListener('change', e => { if (e.target.value) setType(e.target.value); });
-$('#download-form').addEventListener('submit', async e => {
-  e.preventDefault(); const button = $('#submit-download'); button.disabled=true;
-  try {
-    await api('/api/tasks', {type:currentType, source:$('#source').value, options:{quality:$('#quality').value, format:$('#audio-format').value, filename:['file','m3u8'].includes(currentType) ? $('#filename').value : '', language:$('#language').value,metadata:true}});
-    $('#source').value=''; toast('任务已加入队列'); await refreshTasks();
-  } catch (error) { toast(error.message, true); }
-  finally { button.disabled=!connected; }
-});
-function size(bytes) { if (bytes < 1024) return `${bytes} B`; const i=Math.min(3,Math.floor(Math.log(bytes)/Math.log(1024))); return `${(bytes/1024**i).toFixed(1)} ${['B','KB','MB','GB'][i]}`; }
-function renderTasks() {
-  const active = tasks.filter(t => ['running','queued'].includes(t.status)).length;
-  $('#stat-active').textContent=active; $('#stat-completed').textContent=tasks.filter(t => t.status==='completed').length;
-  $('#stat-total').textContent=tasks.length; $('#queue-count').textContent=tasks.length; $('#nav-count').textContent=active;
-  const query = $('#task-search').value.toLowerCase();
-  const list = tasks.filter(t => (currentFilter==='all' || currentFilter==='active' && ['running','queued'].includes(t.status) || currentFilter===t.status) && `${t.title} ${t.source}`.toLowerCase().includes(query));
-  if (!list.length) {
-    $('#task-list').innerHTML = `<div class="empty-state"><span class="empty-icon">${icon('download')}</span><h3>${tasks.length ? '这里暂时没有匹配的任务' : '下一份精彩，从这里开始'}</h3><p>${tasks.length ? '试试其他筛选条件或搜索关键词。' : '粘贴一个链接，开始你的第一次下载。'}</p></div>`;
-    return;
-  }
-  $('#task-list').innerHTML = list.map(t => {
-    const progress = Math.max(0,Math.min(100,Number(t.progress)||0));
-    const buttons = [];
-    if (['running','queued'].includes(t.status)) buttons.push(['pause','暂停'],['cancel','取消']);
-    if (['paused','failed','cancelled'].includes(t.status)) buttons.push([t.status==='failed'?'retry':'resume',t.status==='failed'?'重试':'继续']);
-    buttons.push(['files','文件'],['log','日志']);
-    return `<article class="task-row"><span class="task-type-icon">${icon(typeIcons[t.type])}</span><div class="task-info"><div class="task-title-line"><span class="task-title" title="${esc(t.title)}">${esc(t.title)}</span><span class="task-status ${esc(t.status)}">${esc(statuses[t.status]||t.status)}</span></div><div class="task-source" title="${esc(t.source)}">${esc(t.source)}</div><div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div><div class="task-meta"><span>${progress.toFixed(0)}%</span><span>${esc(typeNames[t.type])}</span>${t.status==='running'?`<span>${esc(t.speed)} · ${esc(t.eta)}</span>`:''}<div class="task-actions">${buttons.map(([action,label])=>`<button class="text-button" data-task="${esc(t.id)}" data-action="${action}">${label}</button>`).join('')}</div></div>${t.error?`<p class="micro form-error">${esc(t.error)}</p>`:''}</div></article>`;
-  }).join('');
-}
-$('#task-list').addEventListener('click', async e => {
-  const button=e.target.closest('[data-action]'); if (!button) return;
-  const {task:id, action}=button.dataset; button.disabled=true;
-  try {
-    if (['files','log'].includes(action)) {
-      const result = await api(`/api/tasks/${id}/${action}`);
-      $('#detail-title').textContent=action==='files'?'下载文件':'任务日志';
-      $('#detail-content').innerHTML=action==='files' ? `<p class="muted">${result.complete?'点击文件，保存到当前设备。':'任务尚未完成，下方列出目前生成的文件。'}</p>${result.files.length?result.files.map(f=>`<a class="file-link" href="${esc(f.url)}" download><span>${esc(f.name)}</span><small>${size(f.bytes)} ↓</small></a>`).join(''):'<div class="empty-state"><p>暂时没有可取回的文件。</p></div>'}` : `<pre class="log-view">${esc(result.log||'暂无日志。')}</pre>`;
-      showDialog('detail-dialog');
-    } else { await api(`/api/tasks/${id}/${action}`, {}); await refreshTasks(); }
-  } catch (error) { toast(error.message,true); }
-  finally { button.disabled=false; }
-});
-$$('[data-filter]').forEach(el=>el.addEventListener('click',()=> { currentFilter=el.dataset.filter; $$('[data-filter]').forEach(b=>b.classList.toggle('active',b===el)); renderTasks(); }));
-$('#task-search').addEventListener('input',renderTasks);
-async function refreshTasks() {
+async function refreshState() {
   if (polling) return;
-  polling=true;
-  const generation=authGeneration;
-  try {
-    const state=await api('/api/state');if(generation!==authGeneration)return;
-    tasks=state.tasks; setConnection(true); applyFeatures(state.features); renderTasks();
-    $('#download-dir').textContent=state.download_dir; $('#download-dir').title=state.download_dir;
-    $('#settings-dir').textContent=state.download_dir; $('#version-label').textContent=state.version;
-    if (!$('#settings-dialog').open) $('#concurrency').value=state.concurrency;
-    if (typeof loadAccountSync === 'function' && auth.user) loadAccountSync();
-    $('#engine-list').innerHTML=Object.entries(state.engines).map(([name,ready])=>`<div class="engine-row"><span>${esc(name)}</span><span class="engine-status ${ready?'':'missing'}"><i></i>${ready?'就绪':'未安装'}</span></div>`).join('');
-  } catch (error) { if(generation===authGeneration)setConnection(false); }
-  finally { polling=false; }
+  polling=true;const generation=authGeneration;
+  try {const state=await api('/api/state');if(generation!==authGeneration)return;
+    setConnection(true);applyFeatures(state.features);$('#version-label').textContent=state.version;
+    if(typeof loadAccountSync==='function'&&auth.user)loadAccountSync();
+  }catch(error){if(generation===authGeneration)setConnection(false);}finally{polling=false;}
 }
-$('#refresh-tasks').addEventListener('click',async()=>{await refreshTasks();toast(connected?'队列已刷新':'连接失败，请确认 Web 服务正在运行。',!connected);});
 $('#settings-open').addEventListener('click',()=>showDialog('settings-dialog'));
 $('#settings-form').addEventListener('submit',async e=>{
   e.preventDefault();const button=$('#settings-save');button.disabled=true;
-  try{const selected={downloads:$('#feature-downloads').checked,timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked,ai_assistants:$('#feature-ai_assistants').checked};
-    const result=await api('/api/settings',{concurrency:Number($('#concurrency').value),features:selected});
-    $('#settings-dialog').close();applyFeatures(result.features||selected);await refreshTasks();toast('功能加载与偏好设置已保存');
+  try{const selected={timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked,ai_assistants:$('#feature-ai_assistants').checked};
+    const result=await api('/api/settings',{features:selected});
+    $('#settings-dialog').close();applyFeatures(result.features||selected);await refreshState();toast('功能加载与偏好设置已保存');
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
 
@@ -270,7 +200,8 @@ function acceptTimetable(data) {
   timetableLoaded=true;
   savedTimetable=data.schedule; timetable=data.schedule; firstMonday=data.first_monday||''; demo=false;
   $('#demo-toggle').textContent='预览示例课表'; $('#first-monday').value=firstMonday;
-  const current=currentWeek(); selectedWeek=current&&current>0&&current<=maxWeeks()?current:1;
+  if(Number.isInteger(data.selected_week))selectedWeek=data.selected_week;
+  savedSelectedWeek=selectedWeek;
   updateWeekOptions();renderTimetable();
 }
 function splitPeriods(periods) {
@@ -315,10 +246,22 @@ $('#schedule-grid').addEventListener('click',e=>{
   const pairs=[['上课时间',`周${'一二三四五六日'[c.weekday-1]} · 第 ${c.periods.join('、')} 节`],['教学周次',c.week_text],['上课地点',c.location||'未提供'],['任课教师',c.teacher||'未提供'],['校区',c.campus||'未提供'],['学分',c.credits||'未提供'],['教学班',c.class_name||'未提供']];
   $('#detail-content').innerHTML=`<dl class="course-details">${pairs.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;showDialog('detail-dialog');
 });
-$('#week-select').addEventListener('change',e=>{selectedWeek=Number(e.target.value);renderTimetable();});
-$('#prev-week').addEventListener('click',()=>{selectedWeek=Math.max(1,selectedWeek-1);$('#week-select').value=selectedWeek;renderTimetable();});
-$('#next-week').addEventListener('click',()=>{selectedWeek=Math.min(maxWeeks(),selectedWeek+1);$('#week-select').value=selectedWeek;renderTimetable();});
-$('#current-week').addEventListener('click',()=>{if(!firstMonday){showDialog('semester-dialog');return;}const current=currentWeek();if(current<1||current>maxWeeks()){toast('当前日期不在所设学期内，请检查开学日期。',true);return;}selectedWeek=current;$('#week-select').value=current;renderTimetable();});
+async function selectWeek(week) {
+  selectedWeek=week;$('#week-select').value=week;renderTimetable();
+  if(demo)return;
+  savedSelectedWeek=week;const generation=authGeneration;
+  try {
+    if(auth.user){
+      if(!cloudReady)await loadAccountSync(true);
+      if(generation!==authGeneration)return;
+      await queueCloudData('schedule',{...cloudData('schedule'),schedule:savedTimetable,first_monday:firstMonday,selected_week:week});
+    }else{const data=await api('/api/timetable/week',{selected_week:week});if(generation===authGeneration)acceptTimetable(data);}
+  }catch(error){if(generation===authGeneration)toast(error.message,true);}
+}
+$('#week-select').addEventListener('change',e=>{selectWeek(Number(e.target.value));});
+$('#prev-week').addEventListener('click',()=>{selectWeek(Math.max(1,selectedWeek-1));});
+$('#next-week').addEventListener('click',()=>{selectWeek(Math.min(maxWeeks(),selectedWeek+1));});
+$('#current-week').addEventListener('click',()=>{if(!firstMonday){showDialog('semester-dialog');return;}const current=currentWeek();if(current<1||current>maxWeeks()){toast('当前日期不在所设学期内，请检查开学日期。',true);return;}selectWeek(current);});
 $('#semester-open').addEventListener('click',()=>showDialog('semester-dialog'));
 $('#semester-form').addEventListener('submit',async e=>{e.preventDefault();if(demo){toast('请先退出示例预览，再设置自己的学期。',true);return;}try{acceptTimetable(await api('/api/timetable/semester',{first_monday:$('#first-monday').value,base_revision:timetableRevision}));$('#semester-dialog').close();toast('学期日期已保存');}catch(error){toast(error.message,true);}});
 $('#import-open').addEventListener('click',()=>showDialog('import-dialog'));
@@ -342,7 +285,7 @@ $('#online-form').addEventListener('submit',async e=>{
 });
 $('#export-schedule').addEventListener('click',()=>{if(!timetable||demo)return;const url=URL.createObjectURL(new Blob([JSON.stringify(timetable,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`Omini-课表-${timetable.year}-${timetable.term}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('课表 JSON 已导出');});
 $('#demo-toggle').addEventListener('click',()=>{
-  if(demo){timetable=savedTimetable;demo=false;$('#demo-toggle').textContent='预览示例课表';updateWeekOptions();renderTimetable();return;}
+  if(demo){timetable=savedTimetable;selectedWeek=savedSelectedWeek;demo=false;$('#demo-toggle').textContent='预览示例课表';updateWeekOptions();renderTimetable();return;}
   demo=true;
   const rows=[['设计思维与表达','林老师','创意楼 A201',1,1,2],['高等数学','陈老师','教学楼 B302',2,3,4],['大学英语','周老师','教学楼 A405',3,1,2],['数据结构','李老师','实验楼 C203',4,3,4],['数字媒体设计','张老师','创意楼 A102',5,1,3],['体育与健康','王老师','综合运动场',1,7,8],['程序设计实践','刘老师','计算机实验室',3,5,7],['大学英语','周老师','教学楼 A405',5,5,6],['设计思维与表达','林老师','创意楼 A201',2,9,10]];
   timetable={schema:1,year:String(new Date().getFullYear()),term:'3',updated_at:'示例',period_times:{},courses:rows.map(([name,teacher,location,weekday,start,end])=>({name,teacher,location,weekday,periods:Array.from({length:end-start+1},(_,i)=>start+i),weeks:Array.from({length:16},(_,i)=>i+1),week_text:'1-16周 · 示例',campus:'示例校区',credits:'',class_name:''}))};
@@ -356,9 +299,9 @@ async function loadTimetable(){
 }
 async function loadInitial(){
   const generation=authGeneration;
-  try{const session=await api('/api/auth/session');if(generation!==authGeneration)return;setAuth(session);if(!auth.authenticated){requireLogin();return;}await refreshTasks();}
+  try{const session=await api('/api/auth/session');if(generation!==authGeneration)return;setAuth(session);if(!auth.authenticated){requireLogin();return;}await refreshState();}
   catch(error){setConnection(false);toast(error.message,true);}
 }
-renderTasks();updateWeekOptions();renderTimetable();setAuth(auth);loadInitial();
-setInterval(()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshTasks();},2000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshTasks();});
+updateWeekOptions();renderTimetable();setAuth(auth);loadInitial();
+setInterval(()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshState();},2000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&auth.authenticated&&!$('#login-dialog').open)refreshState();});

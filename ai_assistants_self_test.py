@@ -33,14 +33,14 @@ def run_ai_assistants_test(app_module) -> int:
                 item.start()
             try:
                 app_module.ensure_app_dirs()
-                app_module.save_json(app_module.SETTINGS_FILE, {"theme": "深色", "omini_api_workspace": str(root / "api")})
+                app_module.save_json(app_module.SETTINGS_FILE, {"theme": "深色"})
                 window = app_module.MainWindow()
                 window.show()
-                window.nav.setCurrentRow(8)
+                window.nav.setCurrentRow(app_module.PAGE_FEATURES.index("ai_assistants"))
                 qt.processEvents()
                 page = window.ai_assistants_page
                 assert window.stack.currentWidget() is page
-                assert "AI 编程助手" in window.nav.item(8).text()
+                assert "AI 编程助手" in window.nav.item(app_module.PAGE_FEATURES.index("ai_assistants")).text()
                 assert page.tabs.count() == 7
                 assert not page.is_running
                 page.profiles["claude"].proxy.setText("http://127.0.0.1:7899")
@@ -96,7 +96,7 @@ def run_ai_assistants_test(app_module) -> int:
                     window.show()
                 window.nav.setCurrentRow(0)
                 assert page.is_running
-                window.nav.setCurrentRow(8)
+                window.nav.setCurrentRow(app_module.PAGE_FEATURES.index("ai_assistants"))
                 capture = os.environ.get("OMINI_AI_CAPTURE_DIR")
                 if capture:
                     capture_path = Path(capture)

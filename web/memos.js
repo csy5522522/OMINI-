@@ -15,10 +15,24 @@ function memoNotice(text='',conflict=false,retry=false){
   memoEl('memo-save-copy').hidden=!conflict;memoEl('memo-retry').hidden=!retry;
 }
 function memoDraftKey(){return `omini-memo-draft:${auth.user?.id||'guest'}`;}
-function persistMemoDraft(){
-  if(!memoCurrent||!memoDirty)return;
-  try{localStorage.setItem(memoDraftKey(),JSON.stringify({...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()}));}catch(_){memoNotice('浏览器草稿空间已满，请保持页面打开并重试保存。',false,true);}
+let memoDraftQueue=Promise.resolve(),memoDraftSaving=0;
+function persistMemoDraft(value) {
+  const key=memoDraftKey();
+  const snapshot=arguments.length?value:(!memoCurrent||!memoDirty?null:{...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()});
+  if(!arguments.length&&!snapshot)return memoDraftQueue;
+  memoDraftSaving++;
+  memoDraftQueue=memoDraftQueue.catch(()=>{}).then(()=>cloudDraftStore.save(key,snapshot));
+  memoDraftQueue.catch(()=>memoNotice('加密草稿保存失败，请保持页面打开并重试保存。',false,true)).finally(()=>memoDraftSaving--);
+  return memoDraftQueue;
 }
+async function readMemoDraft() {
+  await memoDraftQueue.catch(()=>{});
+  const key=memoDraftKey();let legacy=null;
+  try{legacy=JSON.parse(localStorage.getItem(key)||'null');}catch(_){}
+  if(legacy){await cloudDraftStore.save(key,legacy);localStorage.removeItem(key);return legacy;}
+  return cloudDraftStore.load(key);
+}
+window.addEventListener('beforeunload',event=>{if(memoDraftSaving){event.preventDefault();event.returnValue='';}});
 function closeMemoMenu(){memoEl('memo-menu').hidden=true;memoEl('memo-more').setAttribute('aria-expanded','false');}
 function resetMemos(){
   persistMemoDraft();clearTimeout(memoTimer);memoOperation++;memoBusy=false;memoLoading=false;
@@ -73,7 +87,8 @@ async function loadMemos(force=false){
     // The user may start typing while the listing request is in flight.
     if(memoDirty||memoBusy||memoComposing)return;
     memos=data.memos;memoLoaded=true;
-    let draft=null;try{draft=JSON.parse(localStorage.getItem(memoDraftKey())||'null');}catch(_){}
+    let draft=null;try{draft=await readMemoDraft();}catch(_){memoNotice('加密草稿读取失败，请检查浏览器存储。');}
+    if(generation!==authGeneration||memoDirty||memoBusy||memoComposing)return;
     if(draft&&typeof draft.content==='string'&&typeof draft.title==='string'&&!memoCurrent){
       const server=memos.find(m=>m.id===draft.id);showMemo({...draft,deleted:false});memoDirty=true;
       if(server&&server.version!==draft.version){memoNotice('已恢复本机草稿，云端已有新版本。请保存冲突副本以保留两份内容。',true);memoStatus('存在版本冲突','error');}
@@ -105,7 +120,7 @@ async function saveMemo(){
     if(generation!==authGeneration||memoCurrent?.id!==current.id)return false;
     memoCurrent=result.memo;memos=[result.memo,...memos.filter(m=>m.id!==result.memo.id)];
     if(memoEl('memo-title').value===current.title&&memoEditor.getContent()===current.content){
-      memoDirty=false;try{localStorage.removeItem(memoDraftKey());}catch(_){}memoNotice();memoStatus(`已同步 · ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`);
+      memoDirty=false;persistMemoDraft(null);memoNotice();memoStatus(`已同步 · ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`);
     }else{persistMemoDraft();memoTimer=setTimeout(saveMemo,900);memoStatus('正在编辑 · 自动保存','editing');}
     renderMemoList();return !memoDirty;
   }catch(error){
@@ -169,7 +184,7 @@ memoEl('memo-save-copy').addEventListener('click',async()=>{
   try{
     const result=await api('/api/memos',{title,content,base_version:0});if(generation!==authGeneration)return;
     memos.unshift(result.memo);
-    if(memoCurrent?.id===id&&memoEditor.getContent()===content&&memoEl('memo-title').value===originalTitle){try{localStorage.removeItem(memoDraftKey());}catch(_){}showMemo(result.memo);memoStatus('冲突副本已保存');}
+    if(memoCurrent?.id===id&&memoEditor.getContent()===content&&memoEl('memo-title').value===originalTitle){persistMemoDraft(null);showMemo(result.memo);memoStatus('冲突副本已保存');}
     else{persistMemoDraft();memoNotice('已保存一份冲突副本。刚刚继续输入的编辑仍保留在当前草稿。',true);renderMemoList();}
   }catch(error){if(generation===authGeneration)memoNotice(error.message,true);}
   finally{if(operation===memoOperation)memoBusy=false;}

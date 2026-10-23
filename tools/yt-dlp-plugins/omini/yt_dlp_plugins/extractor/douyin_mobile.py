@@ -77,11 +77,25 @@ class _OminiDouyinIE(DouyinIE, plugin_name="omini-mobile"):
                 detail["video"]["bit_rate"] = detail["video"].get("bit_rate") or []
                 info = self._parse_aweme_video_app(detail)
                 if info.get("formats"):
-                    info["http_headers"] = {
+                    headers = {
                         "User-Agent": MOBILE_USER_AGENT,
                         "Referer": share_url,
                     }
-                    return info
+                    # Share pages can still publish retired playwm API URLs.
+                    # Probe with the download headers before accepting metadata
+                    # as a playable video, keeping Range out of the download.
+                    info["formats"] = [
+                        fmt for fmt in info["formats"]
+                        if self._is_valid_url(
+                            fmt["url"], video_id, item="mobile video",
+                            headers={**headers, "Range": "bytes=0-0"},
+                        )
+                    ]
+                    if info["formats"]:
+                        info["http_headers"] = headers
+                        return info
+                    self.to_screen("分享页视频地址已失效，正在改用网页视频接口")
+                    break
         # Login-only or changed share pages still use yt-dlp's normal extractor
         # with the user's explicitly selected Cookie source.
         if kind == "note":

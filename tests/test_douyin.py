@@ -1,7 +1,9 @@
 """Public note/video routing, photo batches and browser-result boundaries."""
 import importlib.util
 import json
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +17,76 @@ import app
 spec = importlib.util.spec_from_file_location("omini_note_test", Path(__file__).resolve().parents[1] / "tools/yt-dlp-plugins/omini/yt_dlp_plugins/extractor/douyin_mobile.py")
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
+
+
+class VideoExtractorTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                cls.requests.append((self.path, dict(self.headers)))
+                if self.path == "/gone":
+                    self.send_error(404)
+                    return
+                self.send_response(206)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Range", "bytes 0-0/1024")
+                self.send_header("Content-Length", "1")
+                self.end_headers()
+                self.wfile.write(b"\x00")
+
+            def log_message(self, *args):
+                pass
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.origin = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join()
+
+    def setUp(self):
+        self.requests.clear()
+        self.ydl = YoutubeDL({"quiet": True, "socket_timeout": 5, "proxy": ""})
+        self.addCleanup(self.ydl.close)
+        self.ie = plugin._OminiDouyinIE(self.ydl)
+        self.id = "7699017575996378395"
+        self.url = f"https://www.douyin.com/video/{self.id}"
+
+    def page(self, *paths):
+        detail = {"aweme_id": self.id, "desc": "Playable video", "video": {
+            "play_addr": {"url_list": [self.origin + path for path in paths]},
+            "bit_rate": None, "duration": 15000,
+        }}
+        return "window._ROUTER_DATA = " + json.dumps({"item_list": [detail]})
+
+    def test_404_share_address_falls_back_without_reloading_same_page(self):
+        web_info = {"id": self.id, "formats": [{"url": "https://cdn.example/video.mp4"}]}
+        with patch.object(self.ie, "_download_webpage", return_value=self.page("/gone")) as page, \
+                patch.object(plugin.DouyinIE, "_real_extract", return_value=web_info) as fallback:
+            result = self.ie._real_extract(self.url)
+        self.assertIs(result, web_info)
+        page.assert_called_once()
+        fallback.assert_called_once_with(self.url)
+
+    def test_206_video_survives_404_candidate_and_keeps_download_headers(self):
+        with patch.object(self.ie, "_download_webpage", return_value=self.page("/gone", "/video")), \
+                patch.object(plugin.DouyinIE, "_real_extract") as fallback:
+            result = self.ie._real_extract(self.url)
+        fallback.assert_not_called()
+        self.assertEqual([fmt["url"] for fmt in result["formats"]], [self.origin + "/video"])
+        self.assertEqual(result["duration"], 15)
+        for _, headers in self.requests:
+            self.assertEqual(headers["Range"], "bytes=0-0")
+            self.assertEqual(headers["User-Agent"], plugin.MOBILE_USER_AGENT)
+            self.assertEqual(headers["Referer"], f"https://www.iesdouyin.com/share/video/{self.id}/")
+        self.assertNotIn("Range", result["http_headers"])
 
 
 class NoteExtractorTest(unittest.TestCase):

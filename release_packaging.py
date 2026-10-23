@@ -6,7 +6,9 @@ import shutil
 EXCLUDED_QT_FRONTENDS = ['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtOpenGL',
                          'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
                          'PySide6.QtWebEngineQuick', 'PySide6.QtWebChannel',
-                         'icloud_notes_page', 'xuanwu_ai_page']
+                         'icloud_notes_page', 'xuanwu_ai_page',
+                         'omini_api', 'omini_api_page', 'omini_api_runner', 'omini_api_self_test',
+                         'brightdata', 'brightdata_page', 'brightdata_self_test']
 QT_LOCALES = ('_en.qm', '_en_US.qm', '_en_GB.qm', '_zh_CN.qm', '_zh_TW.qm')
 
 

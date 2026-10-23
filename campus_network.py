@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+from functools import lru_cache
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -54,31 +55,41 @@ def unprotect_password(blob: str) -> str:
     return _dpapi(base64.b64decode(blob, validate=True), True).decode("utf-8")
 
 
-def _dpapi(data: bytes, decrypt: bool):
-    if sys.platform != "win32":
-        raise RuntimeError("保存密码需要 Windows 本机加密服务。")
+class _DataBlob(ctypes.Structure):
+    # ctypes.POINTER caches by type identity for the life of the interpreter.
+    # A new Structure class on every decrypt permanently retains each class.
+    _fields_ = [("size", ctypes.c_ulong), ("data", ctypes.POINTER(ctypes.c_ubyte))]
 
-    class Blob(ctypes.Structure):
-        _fields_ = [("size", ctypes.c_ulong), ("data", ctypes.POINTER(ctypes.c_ubyte))]
 
-    buffer = ctypes.create_string_buffer(data)
-    source = Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    output = Blob()
+@lru_cache(maxsize=1)
+def _dpapi_functions():
     crypt = ctypes.WinDLL("crypt32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
     kernel.LocalFree.restype = ctypes.c_void_p
-    fn = crypt.CryptUnprotectData if decrypt else crypt.CryptProtectData
-    fn.argtypes = [ctypes.POINTER(Blob), ctypes.c_void_p, ctypes.c_void_p,
-                   ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(Blob)]
-    fn.restype = ctypes.c_int
+    for fn in (crypt.CryptProtectData, crypt.CryptUnprotectData):
+        fn.argtypes = [ctypes.POINTER(_DataBlob), ctypes.c_void_p, ctypes.c_void_p,
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_DataBlob)]
+        fn.restype = ctypes.c_int
+    return crypt.CryptProtectData, crypt.CryptUnprotectData, kernel.LocalFree
+
+
+def _dpapi(data: bytes, decrypt: bool):
+    if sys.platform != "win32":
+        raise RuntimeError("保存密码需要 Windows 本机加密服务。")
+
+    buffer = ctypes.create_string_buffer(data)
+    source = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    output = _DataBlob()
+    protect, unprotect, free = _dpapi_functions()
+    fn = unprotect if decrypt else protect
     if not fn(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(output)):
         raise RuntimeError("Windows 密码加密服务失败，请重新输入密码。")
     try:
         value = ctypes.string_at(output.data, output.size)
         return value if decrypt else base64.b64encode(value).decode("ascii")
     finally:
-        kernel.LocalFree(output.data)
+        free(output.data)
 
 
 def encrypt_portal_password(password: str, mac: str, exponent: str, modulus: str) -> str:

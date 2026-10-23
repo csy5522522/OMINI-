@@ -134,7 +134,7 @@ class TimetablePage(QWidget):
         for value, label in TERMS.items(): self.term.addItem(label, value)
         self.term.setCurrentIndex(max(0, self.term.findData(self.config.get("term", "3" if today.month >= 8 else "12"))))
         self.week = QComboBox(); self.week.addItem("全学期", 0)
-        self.week.currentIndexChanged.connect(self.render)
+        self.week.currentIndexChanged.connect(self._week_changed)
         self.previous = QPushButton("上一周"); self.previous.clicked.connect(lambda: self.step_week(-1))
         self.next = QPushButton("下一周"); self.next.clicked.connect(lambda: self.step_week(1))
         self.current = QPushButton("本周"); self.current.clicked.connect(self.current_week)
@@ -205,6 +205,7 @@ class TimetablePage(QWidget):
         if self.use_start.isChecked() and start.dayOfWeek() != 1:
             raise ValueError("请将第一周起始日期设置为周一。")
         return {"year": self.year.value(), "term": self.term.currentData(),
+                "selected_week": self.week.currentData() or 0,
                 "start_date": start.toString("yyyy-MM-dd") if self.use_start.isChecked() else "",
                 "session_blob": protect_password(normalize_cookie(self.cookie.text()))
                 if self.remember.isChecked() and self.cookie.text().strip() else ""}
@@ -219,6 +220,19 @@ class TimetablePage(QWidget):
             else: self.settings["school_timetable"] = previous
             raise RuntimeError("课表设置保存失败，请检查配置目录。")
         self.config = config
+
+    def _week_changed(self, *_):
+        self.render()
+        previous = dict(self.settings.get("school_timetable", {}))
+        config = {**previous, "selected_week": self.week.currentData() or 0}
+        self.settings["school_timetable"] = config
+        try:
+            self.save_settings(self.settings)
+        except OSError:
+            self.settings["school_timetable"] = previous
+            self.status.setText("周次保存失败，请检查配置目录后重试。")
+            return
+        self.config["selected_week"] = config["selected_week"]
 
     def save(self):
         try:
@@ -297,7 +311,7 @@ class TimetablePage(QWidget):
         worker.deleteLater()
 
     def _display(self, schedule):
-        previous_week = self.week.currentData()
+        previous_week = self.config.get("selected_week", self.week.currentData() or 0)
         self.schedule = schedule
         self.year.setValue(int(schedule["year"]))
         self.term.setCurrentIndex(self.term.findData(schedule["term"]))
@@ -317,6 +331,8 @@ class TimetablePage(QWidget):
         """Apply a cloud snapshot without replacing local school login cookies."""
         monday = value.get("first_monday", "")
         self.config["start_date"] = monday
+        if "selected_week" in value:
+            self.config["selected_week"] = value["selected_week"]
         self.use_start.setChecked(bool(monday))
         if monday: self.start.setDate(QDate.fromString(monday, "yyyy-MM-dd"))
         if value.get("schedule") is not None:

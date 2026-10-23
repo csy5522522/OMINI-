@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from text_notes import read_text_file
 import socket
 import tempfile
 import time
@@ -56,7 +57,7 @@ def run_settings_test(app_module):
             checks["notes"].setChecked(False)
             with patch.object(app_module.QMessageBox, "information"): window.settings_page.save()
             assert window.notes_page is None
-            assert file.read_text(encoding="utf-8") == "关闭功能后保留笔记"
+            assert read_text_file(file)[0] == "关闭功能后保留笔记"
             checks["notes"].setChecked(True)
             with patch.object(app_module.QMessageBox, "information"): window.settings_page.save()
             assert window.notes_page.editor.toPlainText() == "关闭功能后保留笔记"
@@ -116,7 +117,7 @@ def run_settings_test(app_module):
             assert not AccountClient(panel.url, token).request("session")["authenticated"]
             assert not panel.store.path.exists()
             until(lambda: page.worker is None and page.context is None, "Memo logout did not restore local workspace")
-            assert file.read_text(encoding="utf-8") == "关闭功能后保留笔记"
+            assert read_text_file(file)[0] == "关闭功能后保留笔记"
             report["durable_session_and_logout"] = True
             window.settings["theme"] = "浅色"; window.apply_theme(); window.open_account()
             qt.processEvents()

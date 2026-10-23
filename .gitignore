@@ -41,6 +41,12 @@ temp/
 *.sqlite3-*
 account-sync.key
 *.account-sync.key
+memo-storage.key
+*.memo-storage.key
+*.sqlite3.key
+*.ominote
+.memo-migration-*
+.migration-backup/
 **/account-workspaces/
 *.sql.gz
 

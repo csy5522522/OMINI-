@@ -163,7 +163,8 @@ class DesktopAccountSync(QObject):
         timetable = self.root / "school-timetable.json"
         schedule = json.loads(timetable.read_text(encoding="utf-8")) if timetable.exists() else None
         monday = settings.get("school_timetable", {}).get("start_date", "")
-        return {"preferences": preferences(settings), "schedule": {"schedule": schedule, "first_monday": monday},
+        week = settings.get("school_timetable", {}).get("selected_week", 0)
+        return {"preferences": preferences(settings), "schedule": {"schedule": schedule, "first_monday": monday, "selected_week": week},
                 "assistants": read_assistants(self.root / "ai-assistants")}
 
     def persist(self):
@@ -230,12 +231,13 @@ class DesktopAccountSync(QObject):
             "school_timetable": self.guest_settings.get("school_timetable", {})})
 
     def retire_pages(self):
-        for feature, index in (("timetable", 2), ("ai_assistants", 8)):
+        from feature_config import PAGE_FEATURES
+        for feature in ("timetable", "ai_assistants"):
             page = getattr(self.window, feature + "_page", None)
             if page:
                 page.stop()
                 from PySide6.QtWidgets import QWidget
-                self.window.replace_page(index, QWidget())
+                self.window.replace_page(PAGE_FEATURES.index(feature), QWidget())
                 setattr(self.window, feature + "_page", None)
 
     def refresh_settings(self):
@@ -312,6 +314,8 @@ class DesktopAccountSync(QObject):
             else:
                 (self.root / "school-timetable.json").unlink(missing_ok=True)
             self.window.settings.setdefault("school_timetable", {})["start_date"] = schedule.get("first_monday", "")
+            if "selected_week" in schedule:
+                self.window.settings["school_timetable"]["selected_week"] = schedule["selected_week"]
             page = getattr(self.window, "timetable_page", None)
             if page: page.apply_cloud(schedule)
         if value["assistants"] != before["assistants"]:

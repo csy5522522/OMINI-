@@ -59,7 +59,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='omini-workspace-') as temporary:
         directory = Path(temporary)
         environment = os.environ.copy(); environment.update(OMINI_ADMIN_PASSWORD='Fixture-Admin-123', OMINI_WEB_PASSWORD='', PYTHONIOENCODING='utf-8')
-        process = subprocess.Popen([sys.executable, 'web_server.py', '--port', '0', '--data-dir', str(directory/'server'), '--download-dir', str(directory/'downloads')],
+        process = subprocess.Popen([sys.executable, 'web_server.py', '--port', '0', '--data-dir', str(directory/'server')],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8', env=environment,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         ready = threading.Event(); server = {}; output = []
@@ -93,7 +93,7 @@ def main():
             native.resize(1240, 880); native.show()
             until(lambda: native.worker is None and native.context is not None)
             native.sync_timer.stop()
-            path = next(path for path in native.store.files() if path.stem == '我的世界')
+            path = next(path for path in native.store.files() if native.store.for_path(path)['title'] == '我的世界')
             native.refresh_files(path.name)
             assert native.editor.get_content() == content
             assert '\ufffc' in native.editor.toPlainText()
@@ -201,7 +201,7 @@ def main():
                 page.locator('.memo-version').last.locator('button').click()
                 page.locator('#memo-history-dialog').wait_for(state='hidden')
                 assert page.evaluate('memoEditor.getContent()') == content
-                native.sync_now(); until(lambda: native.worker is None)
+                native.sync_now(); until(lambda: native.worker is None, seconds=60)
                 assert native.editor.get_content() == content
                 report['checks'].append('History menu restores the first text/image snapshot and syncs it to Qt')
                 assert errors == [], errors

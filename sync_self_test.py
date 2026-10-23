@@ -60,7 +60,7 @@ def run_sync_test(app_module):
             folder_sync_page.read_status = lambda: inventory
             window = app_module.MainWindow()
             window.resize(1400, 900)
-            window.nav.setCurrentRow(6)
+            window.nav.setCurrentRow(app_module.PAGE_FEATURES.index("sync"))
             window.show()
             page = window.sync_page
             report["sidebar"] = window.stack.currentWidget() is page

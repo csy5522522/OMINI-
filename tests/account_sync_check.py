@@ -70,6 +70,8 @@ def desktop_agent(root):
             elif action == "schedule":
                 atomic(window.cloud_sync.root / "school-timetable.json", data["schedule"])
                 window.timetable_page.apply_cloud(data)
+            elif action == "week":
+                window.timetable_page.week.setCurrentIndex(window.timetable_page.week.findData(data["value"]))
             elif action == "theme":
                 window.settings["theme"] = data["value"]; window.apply_theme()
             elif action == "memo":
@@ -142,8 +144,7 @@ class Service:
     def __init__(self, root, port=0):
         self.root = Path(root)
         env = os.environ.copy(); env.update(OMINI_WEB_PASSWORD="", PYTHONIOENCODING="utf-8")
-        self.process = subprocess.Popen([sys.executable, "web_server.py", "--port", str(port), "--data-dir", str(self.root / "server"),
-            "--download-dir", str(self.root / "downloads")], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        self.process = subprocess.Popen([sys.executable, "web_server.py", "--port", str(port), "--data-dir", str(self.root / "server")], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         ready, lines = threading.Event(), []
         def output():
@@ -204,6 +205,23 @@ def main():
                 page.wait_for_function("() => cloudReady && !cloudBusy")
                 page.locator("[data-member]").first.wait_for()
                 assert page.locator("[data-member]").count() == 1
+                native_a.send("week", {"value": 7}); native_a.send("sync")
+                value = native_b.send("sync")
+                assert value["resources"]["schedule"]["selected_week"] == 7
+                page.evaluate("() => loadAccountSync(true)")
+                page.evaluate("() => {location.hash='#timetable';route()}")
+                page.wait_for_function("() => selectedWeek===7 && !cloudBusy")
+                page.reload(); page.wait_for_function("() => selectedWeek===7 && cloudReady && !cloudBusy")
+                page.locator("#week-select").select_option("0")
+                page.wait_for_function("() => !cloudBusy && !cloudPending.schedule && selectedWeek===0")
+                value = native_a.send("sync")
+                assert value["resources"]["schedule"]["selected_week"] == 0
+                native_b.send("sync")
+                native_b.send("week", {"value": 12}); native_b.send("sync")
+                page.evaluate("() => loadAccountSync(true)")
+                page.wait_for_function("() => selectedWeek===12 && !cloudBusy")
+                report["checks"].append("Selected weeks and all-semester view persist after browser reload and synchronize in both directions across two native clients")
+                page.evaluate("() => {location.hash='#ai_assistants';route()}")
                 path = root / "browser-credential.json"; atomic(path, credential("browser"))
                 page.locator("#cloud-import").set_input_files(str(path))
                 page.wait_for_function("() => Object.keys(cloudData('assistants').members||{}).length===2 && !cloudBusy")
@@ -275,7 +293,7 @@ def main():
             assert not isolated["memos"]
             native_a.send("login", {"email": user["email"]}); native_a.send("sync")
             report["checks"].append("Switching accounts isolates native timetable, Codex credentials, memos and sync baselines")
-            native_a.send("screenshot", {"page": 8, "path": str(DEST / "desktop-pool.png")})
+            native_a.send("screenshot", {"page": 6, "path": str(DEST / "desktop-pool.png")})
             native_a.send("screenshot", {"page": 4, "components": True, "path": str(DEST / "desktop-components.png")})
             report["screenshots"].extend([str(DEST / "desktop-pool.png"), str(DEST / "desktop-components.png")])
             native_b.close(); agents.remove(native_b)

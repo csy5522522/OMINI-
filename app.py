@@ -1,12 +1,7 @@
-"""Omini工具箱 - 下载、校园网、课表、备忘录、同步、API 与 AI 编程助手。"""
+"""Omini工具箱 - 下载、校园网、课表、备忘录、同步与 AI 编程助手。"""
 from __future__ import annotations
 
 import sys
-
-# API workers use the same executable in frozen distributions, before Qt starts.
-if __name__ == "__main__" and sys.argv[1:2] == ["--omini-api"]:
-    from omini_api.runtime import main as run_omini_api
-    raise SystemExit(run_omini_api(sys.argv[2:]))
 
 if __name__ == "__main__" and sys.argv[1:2] == ["--web"]:
     sys.argv.pop(1)
@@ -38,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from local_ffmpeg import resolve_ffmpeg
-from feature_config import DESKTOP_FEATURES, PAGE_FEATURES, enabled_features
+from feature_config import DESKTOP_FEATURES, PAGE_FEATURES, enabled_features, saved_page
 from account_panel import AccountPanel
 from updater_page import UpdatePanel
 from updater import launch_installer
@@ -1283,7 +1278,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 680)
         self.quitting = False
         self._build_ui()
-        previous_page = self.settings.get("last_page", 0)
+        previous_page = saved_page(self.settings)
         if isinstance(previous_page, int) and 0 <= previous_page < self.nav.count() and not self.nav.item(previous_page).isHidden():
             self.nav.setCurrentRow(previous_page)
         self.apply_theme()
@@ -1295,7 +1290,6 @@ class MainWindow(QMainWindow):
         self.feature_tray_actions = {
             "campus": menu.addAction("校园网立即登录", self.login_campus),
             "sync": menu.addAction("打开文件夹同步", self.open_folder_sync),
-            "omini_api": menu.addAction("打开 Omini API", self.open_omini_api),
             "ai_assistants": menu.addAction("打开 AI 编程助手", self.open_ai_assistants),
         }
         for key, action in self.feature_tray_actions.items(): action.setVisible(enabled_features(self.settings)[key])
@@ -1331,7 +1325,7 @@ class MainWindow(QMainWindow):
         side_layout.addSpacing(24)
         self.nav = QListWidget(); self.nav.setObjectName("navigation")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  超级备忘录", "⚙  设置", "↗  Bright Data", "⇄  文件夹同步", "⌘  Omini API", "◇  AI 编程助手", "＋  更多工具（敬请期待）"):
+        for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  超级备忘录", "⚙  设置", "⇄  文件夹同步", "◇  AI 编程助手", "＋  更多工具（敬请期待）"):
             item = QListWidgetItem(label); item.setSizeHint(item.sizeHint() + QSize(0, 12)); self.nav.addItem(item)
         side_layout.addWidget(self.nav, 1)
         self.account_button = QPushButton("✉  邮箱注册 / 登录")
@@ -1361,12 +1355,12 @@ class MainWindow(QMainWindow):
         self.settings_page.updates.install_requested.connect(self.install_update)
         self.apply_features(select=False)
         self.nav.currentRowChanged.connect(self.change_page)
-        selected = self.settings.get("last_page", 0)
+        selected = saved_page(self.settings)
         if type(selected) is not int or not 0 <= selected < self.nav.count() or self.nav.item(selected).isHidden():
             selected = next(i for i in range(self.nav.count()) if not self.nav.item(i).isHidden())
         self.nav.setCurrentRow(selected)
         layout.addWidget(self.stack, 1)
-        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 超级备忘录 · Bright Data · 文件夹同步 · Omini API · AI 编程助手")); self.menuBar().addAction(about)
+        about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 超级备忘录 · 文件夹同步 · AI 编程助手")); self.menuBar().addAction(about)
 
     @staticmethod
     def page_attribute(feature):
@@ -1392,15 +1386,9 @@ class MainWindow(QMainWindow):
         if feature == "notes":
             from text_notes_page import TextNotesPage
             return TextNotesPage(APP_DIR / "text-notes.json", self, account=self.settings_page.account)
-        if feature == "brightdata":
-            from brightdata_page import BrightDataPage
-            return BrightDataPage(APP_DIR / "brightdata.json", self)
         if feature == "sync":
             from folder_sync_page import FolderSyncPage
             return FolderSyncPage(APP_DIR / "sync", self)
-        if feature == "omini_api":
-            from omini_api_page import OminiApiPage
-            return OminiApiPage(self.settings, save, self)
         if feature == "ai_assistants":
             from ai_assistants_page import AiAssistantsPage
             return AiAssistantsPage(workspace / "ai-assistants", self)
@@ -1476,15 +1464,11 @@ class MainWindow(QMainWindow):
         if self.campus_page: self.campus_page.manual_login()
 
     def open_ai_assistants(self) -> None:
-        self.nav.setCurrentRow(8 if self.ai_assistants_page else 4)
-        self.restore_window()
-
-    def open_omini_api(self) -> None:
-        self.nav.setCurrentRow(7 if self.omini_api_page else 4)
+        self.nav.setCurrentRow(PAGE_FEATURES.index("ai_assistants") if self.ai_assistants_page else 4)
         self.restore_window()
 
     def open_folder_sync(self) -> None:
-        self.nav.setCurrentRow(6 if self.sync_page else 4)
+        self.nav.setCurrentRow(PAGE_FEATURES.index("sync") if self.sync_page else 4)
         self.restore_window()
 
     def install_update(self, artifact) -> None:
@@ -1508,11 +1492,10 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         self.settings["last_page"] = index
+        self.settings["last_feature"] = PAGE_FEATURES[index]
         save_json(SETTINGS_FILE, self.settings)
         if getattr(self, "ai_assistants_page", None):
             self.ai_assistants_page.report("打开工具：" + self.nav.item(index).text().strip(), "navigation")
-        if getattr(self, "omini_api_page", None) and self.stack.currentWidget() is self.omini_api_page:
-            self.omini_api_page.ensure_started()
 
     def on_settings_changed(self, settings: dict[str, Any]) -> None:
         self.manager.settings = settings
@@ -1545,7 +1528,6 @@ class MainWindow(QMainWindow):
             palette.setColor(role, QColor(color))
         QApplication.instance().setPalette(palette)
         if self.notes_page: self.notes_page.apply_theme(dark)
-        if self.omini_api_page: self.omini_api_page.apply_theme(dark)
         if dark:
             self.setStyleSheet("""
                 QWidget { background: #111827; color: #e5e7eb; font-family: 'Microsoft YaHei UI'; font-size: 13px; }
@@ -1653,18 +1635,12 @@ if __name__ == "__main__":
     if "--self-test-ai-assistants" in sys.argv:
         from ai_assistants_self_test import run_ai_assistants_test
         sys.exit(run_ai_assistants_test(sys.modules[__name__]))
-    if "--self-test-omini-api" in sys.argv:
-        from omini_api_self_test import run_api_test
-        sys.exit(run_api_test(sys.modules[__name__]))
     if "--self-test-update" in sys.argv:
         from update_self_test import run_update_test
         sys.exit(run_update_test(sys.modules[__name__]))
     if "--self-test-sync" in sys.argv:
         from sync_self_test import run_sync_test
         sys.exit(run_sync_test(sys.modules[__name__]))
-    if "--self-test-brightdata" in sys.argv:
-        from brightdata_self_test import run_brightdata_test
-        sys.exit(run_brightdata_test(sys.modules[__name__]))
     if "--self-test-notes" in sys.argv:
         from notes_self_test import run_notes_test
         sys.exit(run_notes_test(sys.modules[__name__]))

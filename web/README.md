@@ -1,104 +1,26 @@
-# Omini Web
+# Omini Web 1.2.2
 
-邮箱账号的课表、学期日期、主题、并发数和功能选择在网页与客户端间共享。「AI 编程助手」页面管理同一账号的 Codex 成员、启停状态、调度、权重、模型和助手连接配置，并显示客户端同步的额度快照与操作记录。账号池进程继续运行在电脑本地。
+网页入口 https://my.omini.cn，管理员入口 /admin。Web 包含学校课表、超级备忘录和 AI 编程助手账号管理。下载中心及其任务、日志、文件取回接口已删除；下载保留在桌面版。
 
-账号同步通过带版本的加密文档保存；网页助手离线编辑使用 IndexedDB 与不可导出 WebCrypto 密钥加密暂存，恢复连接后重试。同字段并发编辑保留云端值及备份，可在偏好设置下载备份或恢复冲突字段。退出账号清除当前视图，未上传的加密草稿按账号隔离。未变化的资源只返回版本号。
+课表支持 HAR/JSON 导入、JSON 导出、学期日期和周次选择。所选周次（0 表示全学期）自动保存，浏览器刷新后恢复，并与同账号客户端双向同步。示例课表预览不保存个人周次。
 
-正式地址：https://my.omini.cn；管理后台：https://my.omini.cn/admin。
+备忘录支持文字图片统一编辑、自动保存、历史回滚、回收站和 TXT 导出。服务器标题、正文、图片与历史采用 Fernet 存储加密，浏览器未保存草稿采用 AES-GCM 加密 IndexedDB。旧 localStorage 草稿成功加密迁移后移除。服务器运行时可解密，这是存储加密。原有导出与历史备份保持原状。
 
-邮箱注册登录与桌面版共用账号。网页提供下载中心、学校课表和超级备忘录；偏好设置可勾选加载功能，取消后隐藏侧栏。个人下载、课表、备忘录、图片与设置按账号隔离。
-
-超级备忘录支持文字、插入与粘贴图片、自动保存、搜索、回收站、历史动作版本与回滚。回滚追加新版本，不清除原历史。连接中断时，未保存编辑会暂存在当前浏览器的账号草稿中；恢复后可继续保存。多端冲突可保存为副本。图片格式 PNG/JPEG/GIF/WebP，单张最多 10 MB；正文每篇最多 2 MB。
-
-备忘录的文字与图片在同一正文区直接编辑，支持撤销重做和 Ctrl+S。底部图片图标用于插图，「更多」提供立即保存、历史版本和移到回收站。左侧列表显示摘要与更新时间，回收站入口位于底部；手机上可通过「返回列表」切换列表与正文。离线、保存失败和冲突提示直接显示在正文底部。
-
-编辑器使用本地打包的 ProseMirror，运行服务不需要 Node.js 或外部 CDN。修改编辑器源码后，执行 `npm ci --prefix scripts/memo-editor` 和 `npm run build --prefix scripts/memo-editor`，提交生成的 `web/memo-editor.js` 及许可证清单。依赖版本由 package-lock.json 锁定，界面布局参考 Notesnook，样式与业务逻辑为项目内实现。原有纯文本、图片引用与历史版本存储格式保持兼容。
-
-桌面默认连接同一云端，每 20 秒同步，支持本机离线编辑及自动保留冲突副本。未登录的 TXT 与账号缓存独立，导入旧笔记会复制并保留原文件。
-
-生产部署采用 Docker + MySQL 8.4 + Nginx HTTPS，详见 [部署说明](../deploy/README.md)。密码保存为加盐哈希，管理员可启停账号和重置密码。邮箱仅作账号标识，本版本未接入验证码。
-
-## 启动
-
-Windows 下双击根目录的 `Start-Omini-Web.cmd`，浏览器会自动打开 `http://127.0.0.1:18765`。保持服务窗口运行；按 Ctrl+C 停止服务时会暂停队列。关闭浏览器页不影响后台下载。
-
-安装版进入「设置 → 邮箱账号与网页端」，将服务地址设为 `http://127.0.0.1:18765` 后点击「启动本机网页服务 → 打开网页端」。也可运行 `Omini工具箱.exe --web --open` 独立启动网页服务。桌面按钮启动的服务随桌面完全退出而停止，独立启动的服务自行运行。
-
-## 邮箱注册与登录
-
-首次打开网页选择「邮箱注册」，填写邮箱、8～128 字符密码和确认密码；注册成功自动登录。后续选择「邮箱登录」，在「偏好设置」或右上角账号中查看邮箱、退出登录。手机界面也保留账号与设置按钮。桌面设置页提供相同注册、登录和退出按钮，填写同一个服务地址后即可使用同一个邮箱账号。
-
-邮箱是账号标识，本版不配置 SMTP 或发送验证码。密码采用独立随机盐及 PBKDF2-SHA256 600,000 次哈希，数据库保存到服务数据目录 `accounts.sqlite3`。会话 Cookie 为 HttpOnly / SameSite=Strict，12 小时到期；邮箱会话在服务重启后继续有效，退出登录撤销当前设备会话。桌面可使用 Windows 本机加密保存会话，密码只用于本次请求。
-
-邮箱账号之间的网页下载队列、课表和功能设置分别保存；旧的服务访问密码入口保留独立的兼容工作空间。桌面本机工具和桌面功能选择独立保存。配置了 `OMINI_WEB_PASSWORD` 时，新邮箱注册需同时输入服务访问密码，已有邮箱可直接使用邮箱密码登录；网页也保留原有「访问密码」登录方式。
-
-## 可选功能加载
-
-进入「偏好设置 → 可选功能加载」，勾选「下载中心」和「学校课表」并保存。取消勾选会隐藏侧栏和关联快捷入口，直接访问该功能地址时自动跳转至已启用功能；全部关闭则显示功能选择提示，设置和账号入口始终可用。关闭下载会暂停网页下载队列，已有文件和课表继续保留。课表仅在启用并进入页面时读取，功能选择随服务重启恢复。
-
-开发环境需 Python 3.11 和根目录 `requirements.txt` 中的依赖。首次准备可运行：
+本机开发：
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-web.txt
 python web_server.py --open
+python web_server.py --port 18766 --data-dir "D:\Omini-Web"
 ```
 
-源码目录 `tools/` 中需包含对应下载引擎：yt-dlp、aria2c、gallery-dl、spotdl。可从已有完整 Windows 安装目录复制 `tools/`；也支持在 PATH 中查找。FFmpeg 使用本机安装，请加入 PATH 或在桌面版设置中指定本机程序。界面会显示引擎是否就绪。
+数据默认保存在 AppData/Omini工具箱/web。生产使用 Docker + MySQL，HTTPS 由 Nginx 提供，详见 [部署说明](../deploy/README.md)。更新前备份数据库及两份加密密钥，保留持久卷。
 
 ```powershell
-python web_server.py --port 18766 --download-dir "D:\Omini下载" --open
-```
-
-默认下载到运行服务电脑的 `~/Downloads/Omini-Web/`，每个任务使用独立子目录，完成后可从「文件」保存到访问页面的设备。队列、日志和课表默认存放在 `%APPDATA%/Omini工具箱/web/`；与桌面版配置分开，不自动读取个人桌面课表。可通过 `--data-dir` 指定其他位置。
-
-## 通过 Tailscale 访问
-
-在 PowerShell 中执行；把示例 IP 换成本机 Tailscale IPv4，密码设置为自己选择的至少 12 位密码：
-
-```powershell
-$env:OMINI_WEB_PASSWORD = Read-Host "设置 Web 访问密码"
-python web_server.py --host 100.101.102.103 --port 18765
-```
-
-其他已组网设备访问 `http://100.101.102.103:18765` 并输入密码。请使用启动时指定的 IP 地址访问；本版不使用 MagicDNS 别名作为 Web 访问地址。Tailscale 网络策略与防火墙需允许此端口。本服务仅面向本人电脑和受信任的 Tailscale 网络，属于同一工作空间；同密码的设备共享队列和课表。服务本身使用 HTTP，远程链路由 Tailscale 加密，不要把端口映射到公网。
-
-默认只监听本机回环地址；绑定远程地址时要求服务访问密码，不接受 `0.0.0.0`。邮箱登录会话在服务重启后继续有效，原有统一访问密码会话在重启后需重新登录。服务访问密码通过环境变量传入，不写入配置。Web API 校验 Host、Origin 和客户端请求标识，登录和注册按来源限制尝试频率。
-
-## 下载中心
-
-- 视频、音频、普通文件、图库、M3U8、磁力链接、字幕、Spotify 音频。
-- 任务进度、日志、搜索和状态筛选；暂停、继续、取消和重试；并发数可配置为 1～5。
-- Web 服务重启后保留队列，未完成任务变为暂停，点击继续恢复。
-- Web 版接收公开链接。桌面版支持主动选择浏览器 Cookie 和手动导入公开图文图片地址；学校登录与网页预览使用系统浏览器。
-- 文件操作只在指定 Web 下载根目录和任务子目录内进行，不提供任意本地路径读取和命令执行。
-
-## 学校课表
-
-- 从广州华立学院教务系统导出的 HAR（含响应）导入，或导入 / 导出 Omini 课表 JSON。
-- 周次选择、全学期视图、第一周周一设置、本周定位、今日课程、课程详情。
-- 保留不连续节次、单双周和同一时段的多门课程；冲突课程并排显示。
-- 「学校登录」在独立标签页打开学校入口；「在线刷新」可填写当前教务 Cookie 读取指定学期，会话仅用于本次请求，不保存。
-- 浏览器页面不自动读取其他学校网站的 Cookie；Web 版没有桌面版内置登录窗口的自动捕获功能。手机可导入电脑导出的 HAR / 课表 JSON。
-- 「班级课表查询」在学校页面打开，由学校决定可访问的班级和资料。
-- 「预览示例课表」仅在当前页面显示明确标注的示例，不保存、不覆盖个人课表。
-- HAR 上传后只保存课程展示字段，不保留原 HAR、学号、学生姓名或登录请求头；导入失败保留原课表。服务重启可恢复课表。
-
-## 界面与验证
-
-苔绿与米白配色、侧栏导航、下载卡片和课程周视图。支持深浅主题和响应式布局。设计参考 [shadcn/ui](https://github.com/shadcn-ui/ui) 与 [shadcn-admin](https://github.com/satnaing/shadcn-admin)，本版 HTML / CSS / JavaScript 为项目内实现，没有复制上游组件源码，也不依赖外部 CDN。
-
-```powershell
-python -m unittest tests.test_accounts tests.test_desktop_settings tests.test_web_server -v
-node --check web/app.js
-npm install --prefix .cache/web-test --no-audit --no-fund linkedom@0.18.13
+python -m unittest tests.test_web_server tests.test_memos tests.test_memo_encryption tests.test_account_sync -v
+npm install --prefix .cache/web-test --no-audit --no-fund linkedom@0.18.13 fake-indexeddb@6.2.4
 node tests/test_web_frontend.cjs
 node tests/test_memo_frontend.cjs
-python -m unittest tests.test_account_sync tests.test_components -v
 python -m tests.account_sync_check
-python -m unittest tests.test_memo_editor tests.test_text_notes tests.test_memos tests.test_desktop_settings -v
 python -m tests.memo_workspace_check
 ```
-
-`memo_workspace_check` 在临时账号和目录中使用真实 Chromium 与 Qt 验证双向同步、图片编辑、中文输入事件及手机布局，将两端深浅主题截图和报告保存到 `verification/memo-workspace/`；需要安装 Python Playwright 及其 Chromium。
-
-Web 接口测试使用隔离目录和本地文件服务，验证真实下载与文件取回、暂停 / 继续 / 取消、队列并发、HAR 导入、缓存隐私、输入与访问边界、服务重启恢复。DOM 测试验证按钮、主题、筛选、课程重叠与不连续节次、导入 / 导出、失败后数据保留和 HTML 转义；linkedom 仅作为测试依赖，运行 Web 服务不需要 Node.js。

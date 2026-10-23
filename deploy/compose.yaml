@@ -19,7 +19,7 @@ services:
     mem_limit: 768m
   web:
     build: ..
-    image: omini-toolbox:1.2.1
+    image: omini-toolbox:1.2.2
     restart: unless-stopped
     init: true
     ports: ["127.0.0.1:18765:18765"]
@@ -31,7 +31,7 @@ services:
       OMINI_MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
       OMINI_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
     secrets: [mysql_password, admin_password]
-    volumes: [web_data:/data, downloads:/downloads]
+    volumes: [web_data:/data,]
     depends_on:
       mysql:
         condition: service_healthy
@@ -53,4 +53,3 @@ secrets:
 volumes:
   mysql_data:
   web_data:
-  downloads:

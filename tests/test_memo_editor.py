@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from memo_editor import MemoEditor, IMAGE_OBJECT
 from text_notes_page import TextNotesPage
+from text_notes import read_text_file
 
 
 class MemoEditorTests(unittest.TestCase):
@@ -61,7 +62,7 @@ class MemoEditorTests(unittest.TestCase):
         self.page.insert_raw_image(self.raw, self.asset['name'])
         expected = '前文\n\n' + self.token + '后文\n'
         self.assertEqual(editor.get_content(), expected)
-        self.assertEqual(path.read_text(encoding='utf-8'), expected)
+        self.assertEqual(read_text_file(path)[0], expected)
         position = editor.textCursor().position()
         QTest.keyClicks(editor, ' after')
         self.assertEqual(editor.get_content(), '前文\n\n' + self.token + ' after后文\n')
@@ -90,13 +91,13 @@ class MemoEditorTests(unittest.TestCase):
         preedit = QInputMethodEvent('中文输入', [])
         QApplication.sendEvent(editor, preedit)
         editor.insertPlainText('new')
-        self.assertFalse(self.page.flush()); self.assertEqual(path.read_text(encoding='utf-8'), '初稿')
+        self.assertFalse(self.page.flush()); self.assertEqual(read_text_file(path)[0], '初稿')
         commit = QInputMethodEvent(); commit.setCommitString('中文')
         QApplication.sendEvent(editor, commit)
         source = QMimeData(); source.setText('<img src=x onerror=alert(1)>\n' + self.token)
         editor.insertFromMimeData(source)
         self.assertIn('<img src=x onerror=alert(1)>', editor.get_content())
-        self.assertTrue(self.page.flush()); self.assertIn(self.token, path.read_text(encoding='utf-8'))
+        self.assertTrue(self.page.flush()); self.assertIn(self.token, read_text_file(path)[0])
 
     def test_trash_is_read_only_and_restore_keeps_history(self):
         path = self.load('正文\n' + self.token)
@@ -108,18 +109,18 @@ class MemoEditorTests(unittest.TestCase):
         before = len(self.page.store.memos.history('local', self.page.current_memo['id']))
         self.page.restore_note()
         self.assertFalse(self.page.trash_mode); self.assertFalse(self.page.editor.isReadOnly())
-        self.assertEqual(self.page.current_path.read_text(encoding='utf-8'), '正文\n' + self.token)
+        self.assertEqual(read_text_file(self.page.current_path)[0], '正文\n' + self.token)
         self.assertEqual(len(self.page.store.memos.history('local', self.page.current_memo['id'])), before + 1)
 
     def test_title_autosave_and_collision_preserve_edit(self):
         path = self.load('原文')
         self.page.filename.setText('新标题'); self.page.title_edited()
         self.assertTrue(self.page.flush()); self.assertFalse(path.exists())
-        self.assertEqual(self.page.current_path.stem, '新标题')
+        self.assertEqual(self.page.current_memo["title"], '新标题')
         self.page.store.create('已有标题', '别的笔记')
         self.page.filename.setText('已有标题'); self.page.title_edited()
         self.assertFalse(self.page.flush()); self.assertTrue(self.page.dirty)
-        self.assertEqual(self.page.current_path.read_text(encoding='utf-8'), '原文')
+        self.assertEqual(read_text_file(self.page.current_path)[0], '原文')
 
     def test_keyboard_save_preserves_caret_without_waiting_for_autosave(self):
         path = self.load('原文')
@@ -129,7 +130,7 @@ class MemoEditorTests(unittest.TestCase):
         self.assertTrue(self.page.dirty)
         QTest.keyClick(self.page.editor, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
         self.assertFalse(self.page.dirty)
-        self.assertEqual(path.read_text(encoding='utf-8'), self.page.editor.get_content())
+        self.assertEqual(read_text_file(path)[0], self.page.editor.get_content())
         self.assertEqual(self.page.editor.textCursor().position(), cursor)
 
 

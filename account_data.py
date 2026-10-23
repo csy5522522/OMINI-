@@ -58,15 +58,21 @@ def validate_resource(name, value):
             raise ValueError("主题选项有误。")
         if "concurrency" in value and (type(value["concurrency"]) is not int or not 1 <= value["concurrency"] <= 6):
             raise ValueError("并发数应为 1 至 6。")
+        # Read old account documents without resurrecting retired features.
+        if "features" in value and isinstance(value["features"], dict):
+            value = {**value, "features": {k: v for k, v in value["features"].items()
+                                           if k not in {"brightdata", "omini_api"}}}
         validate_features(value.get("features", {}), DESKTOP_FEATURES)
     elif name == "schedule":
-        if set(value) - {"schedule", "first_monday"}:
+        if set(value) - {"schedule", "first_monday", "selected_week"}:
             raise ValueError("课表同步字段有误。")
         if value.get("schedule") is not None:
             value = {**value, "schedule": validate_cache(value["schedule"])}
         monday = value.get("first_monday", "")
         if not isinstance(monday, str) or monday and date.fromisoformat(monday).weekday() != 0:
             raise ValueError("第一周开始日期请选择周一。")
+        if "selected_week" in value and (type(value["selected_week"]) is not int or not 0 <= value["selected_week"] <= 60):
+            raise ValueError("周次应为 0（全学期）至 60 的整数。")
     else:
         if set(value) - {"profiles", "pool", "members", "quotas", "models", "history"}:
             raise ValueError("助手同步字段有误。")

@@ -100,10 +100,9 @@ async function loadAccountSync(force=false) {
     const prefs=cloudData('preferences');
     if(prefs.theme)setTheme(prefs.theme==='深色'?'dark':'light');
     if(prefs.features)applyFeatures(prefs.features);
-    if(!$('#settings-dialog').open&&prefs.concurrency)$('#concurrency').value=prefs.concurrency;
     const schedule=cloudData('schedule');
     if(features.timetable&&'schedule' in schedule&&!demo&&!$('#semester-dialog').open&&!$('#online-dialog').open&&!$('#import-dialog').open){
-      if(JSON.stringify(schedule.schedule)!==JSON.stringify(savedTimetable)||schedule.first_monday!==firstMonday)acceptTimetable({...schedule,revision:cloudResources.schedule.revision});
+      if(JSON.stringify(schedule.schedule)!==JSON.stringify(savedTimetable)||schedule.first_monday!==firstMonday||schedule.selected_week!==selectedWeek)acceptTimetable({...schedule,revision:cloudResources.schedule.revision});
     }
     renderCloudWorkspace();
     cloudStatus(Object.keys(cloudPending).length?'本机新编辑已加密保存，正在继续同步…':`已同步 · ${new Date().toLocaleTimeString()} · ${Object.keys(cloudData('assistants').members||{}).length} 个 Codex 成员${cloudConflicts.length?' · 有并发修改备份':''}`);

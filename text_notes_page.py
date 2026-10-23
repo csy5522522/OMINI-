@@ -1,4 +1,4 @@
-"""Offline native TXT editor; no cloud session or browser runtime."""
+"""Native encrypted memo editor with isolated account workspaces."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -101,7 +101,7 @@ class TextNotesPage(QWidget):
         self._document_open = False
         self._build_ui()
         self.apply_theme(True)
-        self.set_status(startup_error or "自动保存 · 内容保存在本机")
+        self.set_status(startup_error or "自动保存 · 本机存储已加密")
         self.save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
         self.save_shortcut.activated.connect(self.flush)
         self.refresh_files(self.config.get("last_file", ""))
@@ -242,7 +242,7 @@ class TextNotesPage(QWidget):
             self.title_dirty = True; self.dirty = True; self.set_status("正在编辑 · 自动保存"); self.timer.start()
 
     def _remember(self):
-        if self.context: return
+        if self.context or getattr(self, "workspace_error", False): return
         self.config.update(directory=str(self.store.directory), last_file=self.current_path.name if self.current_path else "")
         atomic_text(self.config_path, json.dumps(self.config, ensure_ascii=False, indent=2))
 
@@ -257,7 +257,7 @@ class TextNotesPage(QWidget):
                 entries = [(path, self.store.for_path(path)) for path in self.store.files()]
             entries.sort(key=lambda entry: entry[1]["updated"], reverse=True)
             for path, memo in entries:
-                item = QListWidgetItem(path.name if path else memo["title"])
+                item = QListWidgetItem(memo["title"])
                 item.setData(Qt.ItemDataRole.UserRole, str(path) if path else None)
                 item.setData(int(Qt.ItemDataRole.UserRole) + 1, memo)
                 item.setToolTip(memo["title"])
@@ -296,7 +296,7 @@ class TextNotesPage(QWidget):
         self.dirty = False; self.title_dirty = False; self._saved_content = text
         writable = bool(path) and not self.trash_mode
         self.editor.setEnabled(bool(memo)); self.editor.setReadOnly(not writable)
-        self.filename.setText(path.stem if path else memo["title"] if memo else "")
+        self.filename.setText(memo["title"] if memo else "")
         self.filename.setReadOnly(not writable)
         self.document_kind.setText("RECYCLE BIN" if self.trash_mode else "PERSONAL NOTE")
         self.restore_button.setVisible(bool(memo) and self.trash_mode)
@@ -307,7 +307,7 @@ class TextNotesPage(QWidget):
         self.empty.setVisible(not memo)
         if memo:
             self._open_document(True)
-            self.set_status("回收站 · 内容与历史均已保留" if self.trash_mode else "已保存到本机 · 自动保存")
+            self.set_status("回收站 · 内容与历史均已保留" if self.trash_mode else "本机加密保存 · 自动保存")
         else:
             self.set_status("回收站为空" if self.trash_mode else "选择或新建备忘录")
         try:
@@ -339,11 +339,12 @@ class TextNotesPage(QWidget):
             if target != self.current_path:
                 self.store.rename(self.current_path, target)
                 self.current_path = target
+            self.digest = read_text_file(self.current_path)[1]
             self.current_memo = self.store.for_path(self.current_path)
             self.dirty = False; self.title_dirty = False
             self._update_current_item()
             self._remember()
-            self.set_status(f"已保存到本机 · {datetime.now():%H:%M}")
+            self.set_status(f"本机加密保存 · {datetime.now():%H:%M}")
             return True
         except (OSError, ValueError) as error:
             self.set_status(f"保存失败：{error}")
@@ -352,14 +353,14 @@ class TextNotesPage(QWidget):
     def _update_current_item(self):
         item = self.notes.currentItem()
         if item and self.current_memo:
-            item.setText(self.current_path.name if self.current_path else self.current_memo["title"])
+            item.setText(self.current_memo["title"])
             item.setData(Qt.ItemDataRole.UserRole, str(self.current_path) if self.current_path else None)
             item.setData(int(Qt.ItemDataRole.UserRole) + 1, self.current_memo)
             self.notes.viewport().update()
 
     def new_note(self):
         if not self.flush(): return
-        title, accepted = QInputDialog.getText(self, "新建 TXT", "文件名", text=f"笔记 {datetime.now():%Y%m%d-%H%M%S}")
+        title, accepted = QInputDialog.getText(self, "新建备忘录", "文件名", text=f"笔记 {datetime.now():%Y%m%d-%H%M%S}")
         if not accepted: return
         try:
             path = self.store.create(title)
@@ -394,7 +395,7 @@ class TextNotesPage(QWidget):
 
     def save_as(self):
         if not self.current_memo: return
-        source = self.current_path or self.store.target(self.current_memo["title"])
+        source = Path.home() / "Documents" / (self.current_memo["title"] + ".txt")
         destination, _ = QFileDialog.getSaveFileName(self, "另存为 TXT", str(source), "纯文本 (*.txt)")
         if not destination: return
         path = Path(destination)
@@ -409,7 +410,7 @@ class TextNotesPage(QWidget):
 
     def rename_note(self):
         if not self.current_path or not self.flush(): return
-        title, accepted = QInputDialog.getText(self, "重命名 TXT", "文件名", text=self.current_path.stem)
+        title, accepted = QInputDialog.getText(self, "重命名备忘录", "文件名", text=self.current_memo["title"])
         if not accepted: return
         try:
             target = self.store.target(title)
@@ -534,8 +535,7 @@ class TextNotesPage(QWidget):
             self.pending_account = True; return
         if not self.flush(): return
         context = (self.account.url, self.account.user["id"]) if self.account and self.account.user else None
-        if context == self.context: return
-        self.context = context
+        if context == self.context and not getattr(self, "workspace_error", False): return
         if context:
             key = hashlib.sha256((context[0] + "\n" + context[1]).encode()).hexdigest()[:32]
             directory = self.config_path.parent / "super-memos" / key
@@ -547,7 +547,23 @@ class TextNotesPage(QWidget):
             self.account_label.setText("本机工作区")
             self.account_label.setToolTip("内容保存在本机，登录后可同步账号备忘录")
             self.sync_timer.stop()
-        self.store = TextNotesStore(directory); self.current_path = None; self.current_memo = None; self.dirty = False; self.trash_mode = False
+        try:
+            store = TextNotesStore(directory)
+        except (OSError, ValueError) as error:
+            self.context = None
+            self.workspace_error = True
+            self.current_path = None; self.current_memo = None; self.dirty = False
+            self.loading = True; self.editor.clear(); self.loading = False
+            self.filename.clear()
+            self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
+            self.setEnabled(False)
+            self.sync_timer.stop()
+            self.set_status("备忘录工作区打开失败：" + str(error))
+            return
+        self.setEnabled(True)
+        self.workspace_error = False
+        self.context = context
+        self.store = store; self.current_path = None; self.current_memo = None; self.dirty = False; self.trash_mode = False
         self.active_button.setChecked(True); self.trash_button.setChecked(False)
         self.editor.set_asset_loader(lambda asset_id: self.store.memos.asset(self.store.owner, asset_id)["data"])
         self.loading = True; self.editor.clear(); self.loading = False
@@ -557,6 +573,7 @@ class TextNotesPage(QWidget):
 
     def sync_now(self):
         if self.stopping or not self.account or not self.account.user or not self.context or self.worker: return
+        if self.context != (self.account.url, self.account.user["id"]): return
         if not self.flush(): return
         self._sync_view = (self.editor.textCursor().position(), self.editor.textCursor().anchor(), self.editor.verticalScrollBar().value(), self.editor.hasFocus())
         self.worker = MemoSyncWorker(self.store.directory, self.account.url, self.account.token, self)

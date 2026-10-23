@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from concurrent.futures import Future
-from dataclasses import asdict
 from datetime import date
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +18,7 @@ import time
 from urllib.parse import quote, unquote, urlsplit
 import webbrowser
 
-from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QTimer
 
 import app as desktop
 import school_timetable as school
@@ -36,57 +34,16 @@ MAX_BODY = 32 * 1024 * 1024
 WEB_VERSION = desktop.APP_VERSION + "-web"
 
 
-class Dispatcher(QObject):
-    requested = Signal(object)
-
-    def __init__(self):
-        super().__init__()
-        self.requested.connect(self.execute)
-
-    @Slot(object)
-    def execute(self, job):
-        future, callback = job
-        if future.set_running_or_notify_cancel():
-            try:
-                future.set_result(callback())
-            except Exception as error:
-                future.set_exception(error)
-
-    def call(self, callback):
-        future = Future()
-        self.requested.emit((future, callback))
-        try:
-            return future.result(timeout=15)
-        except TimeoutError:
-            future.cancel()
-            raise ValueError("服务正忙，请稍后重试。") from None
-
-
 class WebState:
-    def __init__(self, data_dir: Path, download_dir: Path, password: str = ""):
+    def __init__(self, data_dir: Path, password: str = ""):
         self.data_dir = data_dir.resolve()
-        self.download_dir = download_dir.resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.download_dir.mkdir(parents=True, exist_ok=True)
-        # Separate web queue, logs and temporary cookies from desktop data.
-        desktop.APP_DIR = self.data_dir
-        desktop.TASKS_FILE = self.data_dir / "tasks.json"
-        desktop.LOG_DIR = self.data_dir / "logs"
-        desktop.TEMP_COOKIE_DIR = self.data_dir / "runtime-cookies"
-        desktop.ensure_app_dirs()
         self.settings_path = self.data_dir / "settings.json"
-        self.settings = desktop.load_json(self.settings_path, {"concurrency": 2})
-        self.manager = desktop.TaskManager(self.settings)
-        # Restart never silently starts pending downloads.
-        for task in self.manager.tasks:
-            if task.status == "queued":
-                task.status = "paused"
-        self.manager.save_tasks()
-        self.dispatcher = Dispatcher()
+        self.settings = desktop.load_json(self.settings_path, {})
         self.lock = threading.RLock()
         self.password = password
         self.accounts = AccountStore(self.data_dir / "accounts.sqlite3")
-        self.memos = MemoStore(self.accounts.database)
+        self.memos = MemoStore(self.accounts.database, key_root=self.data_dir)
         self.account_data = AccountDataStore(self.accounts.database, self.data_dir)
         admin_password = secret("OMINI_ADMIN_PASSWORD")
         if admin_password: self.accounts.bootstrap_admin(admin_password)
@@ -142,7 +99,7 @@ class WebState:
             value = desktop.load_json(self.data_dir / "timetable.json", None)
             preferences = desktop.load_json(self.data_dir / "semester.json", {})
             return {"schedule": school.validate_cache(value) if value else None,
-                    "first_monday": preferences.get("first_monday", "")}
+                    "first_monday": preferences.get("first_monday", ""), "selected_week": preferences.get("selected_week", 0)}
 
     def save_schedule(self, value):
         value = school.validate_cache(value)
@@ -153,18 +110,6 @@ class WebState:
             desktop.save_json(self.data_dir / "timetable.json", value)
         return self.schedule()
 
-    def task(self, task_id):
-        task = self.dispatcher.call(lambda: next((asdict(t) for t in self.manager.tasks if t.id == task_id), None))
-        if not task:
-            raise ValueError("任务不存在。")
-        return task
-
-    def task_root(self, task_id):
-        task = self.task(task_id)
-        path = Path(task["output_dir"]).resolve()
-        if not path.is_relative_to(self.download_dir) or path == self.download_dir:
-            raise ValueError("此记录不在 Web 下载目录中。")
-        return path
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -199,16 +144,6 @@ class Handler(BaseHTTPRequestHandler):
     def features(self):
         return enabled_features(self.preferences(), WEB_FEATURES)
 
-    def owns_task(self, task):
-        root = self.state.download_dir / self.user["id"] if self.user else self.state.download_dir
-        target = Path(task["output_dir"]).resolve()
-        return target.is_relative_to(root) and target != root and (bool(self.user) or target.parent == root)
-
-    def personal_task(self, task_id):
-        task = self.state.task(task_id)
-        if not self.owns_task(task): raise ValueError("任务不存在。")
-        return task
-
     def schedule(self):
         if not self.user: return self.state.schedule()
         result = self.resource("schedule")
@@ -219,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         schedule = school.validate_cache(value)
         old = self.schedule()
         monday = old.get("first_monday", "") if old.get("schedule") and (old["schedule"].get("year"), old["schedule"].get("term")) == (schedule["year"], schedule["term"]) else ""
-        result = {"schedule": schedule, "first_monday": monday}
+        result = {"schedule": schedule, "first_monday": monday, "selected_week": old.get("selected_week", 0)}
         saved = self.state.account_data.exchange(self.user["id"], "schedule", old["revision"] if base_revision is None else base_revision, result)
         return {**saved["data"], "revision": saved["revision"], "conflicts": saved["conflicts"]}
 
@@ -349,65 +284,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(404, {"error": "备忘录接口不存在。"})
         if path == "/api/state":
             features = self.features
-            tasks = self.state.dispatcher.call(lambda: [asdict(t) for t in self.state.manager.tasks if self.owns_task(asdict(t))]) if features["downloads"] else []
-            engines = {}
-            for name in (("yt-dlp", "aria2c", "ffmpeg", "gallery-dl", "spotdl") if features["downloads"] else ()):
-                try:
-                    desktop.find_engine(name)
-                    engines[name] = True
-                except desktop.EngineError:
-                    engines[name] = False
-            return self.respond(200, {"version": WEB_VERSION, "tasks": tasks,
-                                     "download_dir": str(self.state.download_dir), "engines": engines,
-                                     "features": features,
-                                     "theme": self.preferences().get("theme"),
-                                     "concurrency": self.preferences().get("concurrency", 2)})
+            return self.respond(200, {"version": WEB_VERSION, "features": features,
+                                     "theme": self.preferences().get("theme")})
         if path == "/api/timetable":
             return self.respond(200, self.schedule())
-        parts = path.strip("/").split("/")
-        if len(parts) == 4 and parts[:2] == ["api", "tasks"]:
-            task_id, action = parts[2:]
-            task = self.personal_task(task_id)
-            if action == "log":
-                logfile = desktop.LOG_DIR / f"{task['id']}.log"
-                text = ""
-                if logfile.exists():
-                    with logfile.open("rb") as stream:
-                        stream.seek(max(0, logfile.stat().st_size - 64000))
-                        text = stream.read(64000).decode("utf-8", errors="replace")
-                return self.respond(200, {"log": text})
-            if action == "files":
-                root = self.state.task_root(task_id)
-                files = []
-                if root.exists():
-                    for item in root.rglob("*"):
-                        if item.is_file() and item.resolve().is_relative_to(root) and not item.name.endswith((".part", ".aria2", ".ytdl")):
-                            relative = item.relative_to(root).as_posix()
-                            files.append({"name": relative, "bytes": item.stat().st_size,
-                                          "url": f"/api/files/{task_id}/{quote(relative, safe='/')}"})
-                        if len(files) >= 500:
-                            break
-                return self.respond(200, {"files": files, "complete": task["status"] == "completed"})
-        if len(parts) >= 4 and parts[:2] == ["api", "files"]:
-            self.personal_task(parts[2])
-            root = self.state.task_root(parts[2])
-            target = root.joinpath(*parts[3:]).resolve()
-            if not target.is_relative_to(root) or not target.is_file():
-                return self.respond(404, {"error": "文件不存在。"})
-            with target.open("rb") as stream:
-                self.send_response(200)
-                self.headers_common("application/octet-stream", os.fstat(stream.fileno()).st_size)
-                self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(target.name))
-                self.end_headers()
-                import shutil
-                shutil.copyfileobj(stream, self.wfile, 256 * 1024)
-            return
         self.respond(404, {"error": "接口不存在。"})
 
     def feature_available(self, path):
         feature = ("timetable" if path.startswith("/api/timetable") else
-                   "notes" if path.startswith("/api/memos") else
-                   "downloads" if path.startswith(("/api/tasks", "/api/files")) else None)
+                   "notes" if path.startswith("/api/memos") else None)
         if feature and not self.features[feature]:
             self.respond(403, {"error": "此功能已关闭，请在偏好设置中勾选后使用。"})
             return False
@@ -488,74 +373,18 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "restore":
                 return self.respond(200, {"memo": self.state.memos.restore(owner, parts[2], value.get("version"), value.get("base_version"), device)})
             return self.respond(404, {"error": "备忘录接口不存在。"})
-        if path == "/api/tasks":
-            kind = value.get("type")
-            if kind not in desktop.TYPE_TEXT:
-                raise ValueError("请选择有效的下载类型。")
-            source = str(value.get("source", "")).strip()
-            if len(source) > 8000:
-                raise ValueError("链接过长。")
-            usable = desktop.extract_usable_source(source, allow_search=kind == "subtitle")
-            parsed = urlsplit(usable)
-            if not (parsed.scheme in {"http", "https"} and parsed.hostname or kind == "torrent" and parsed.scheme == "magnet" or kind == "subtitle" and not parsed.scheme and usable):
-                raise ValueError("请输入 HTTP/HTTPS 链接；磁力任务可填写 magnet 链接。")
-            supplied = value.get("options", {})
-            options = {k: supplied[k] for k in ("quality", "format", "language", "subtitles", "metadata", "thumbnail", "playlist") if k in supplied}
-            if options.get("quality", "最佳") not in {"最佳", "2160p", "1080p", "720p", "480p"}:
-                raise ValueError("清晰度有误。")
-            if options.get("format", "mp3") not in {"mp3", "m4a", "flac", "wav", "opus"}:
-                raise ValueError("音频格式有误。")
-            if not isinstance(options.get("language", "zh.*,en.*"), str) or len(options.get("language", "")) > 100:
-                raise ValueError("字幕语言格式有误。")
-            for key in ("subtitles", "metadata", "thumbnail", "playlist"):
-                if key in options and type(options[key]) is not bool:
-                    raise ValueError("下载选项格式有误。")
-            filename = str(supplied.get("filename", "")).strip()
-            if filename:
-                if len(filename) > 160 or any(c in filename for c in '<>:"/\\|?*') or filename in {".", ".."} or any(ord(c) < 32 for c in filename):
-                    raise ValueError("文件名包含无效字符，请只填写文件名。")
-                options["filename"] = filename
-            directory = self.state.download_dir / (self.user["id"] if self.user else "") / secrets.token_hex(8)
-            task = self.state.dispatcher.call(lambda: asdict(self.state.manager.add(kind, source, str(directory), options)))
-            return self.respond(201, {"task": task})
-        parts = path.strip("/").split("/")
-        if len(parts) == 4 and parts[:2] == ["api", "tasks"]:
-            task_id, action = parts[2:]
-            self.personal_task(task_id)
-            if action not in {"pause", "resume", "cancel", "retry"}:
-                raise ValueError("任务操作有误。")
-            self.state.dispatcher.call(lambda: getattr(self.state.manager, action)(task_id))
-            return self.respond(200, {"ok": True})
         if path == "/api/settings":
-            count = value.get("concurrency", self.preferences().get("concurrency", 2))
-            if type(count) is not int or not 1 <= count <= 6:
-                raise ValueError("并发数应为 1 至 6。")
             selected = validate_features(value.get("features", {}), WEB_FEATURES)
             if self.user:
-                updated = {**self.preferences(), "concurrency": count, "features": {**self.features, **selected}}
                 baseline = self.resource("preferences")
-                updated["features"] = {**self.features, **baseline["data"].get("features", {}), **selected}
+                updated = {**baseline["data"], "features": {**baseline["data"].get("features", {}), **selected}}
                 if "theme" in value: updated["theme"] = value["theme"]
                 self.state.account_data.exchange(self.user["id"], "preferences", baseline["revision"], updated)
-                if not updated["features"]["downloads"]:
-                    def pause_owned():
-                        for task in self.state.manager.tasks:
-                            if self.owns_task(asdict(task)) and task.status in {"running", "queued"}: self.state.manager.pause(task.id)
-                    self.state.dispatcher.call(pause_owned)
-                return self.respond(200, {"ok": True, "features": updated["features"]})
-            def save():
-                with self.state.lock:
-                    updated = {**self.state.settings, "concurrency": count,
-                               "features": {**self.state.features, **selected}}
-                    desktop.save_json(self.state.settings_path, updated)
-                    self.state.settings.update(updated)
-                    if not self.state.features["downloads"]:
-                        for task in self.state.manager.tasks:
-                            if task.status in {"running", "queued"}:
-                                self.state.manager.pause(task.id)
-                    else:
-                        self.state.manager._start_waiting_locked()
-            self.state.dispatcher.call(save)
+                return self.respond(200, {"ok": True, "features": enabled_features(updated, WEB_FEATURES)})
+            with self.state.lock:
+                updated = {**self.state.settings, "features": {**self.state.features, **selected}}
+                desktop.save_json(self.state.settings_path, updated)
+                self.state.settings.update(updated)
             return self.respond(200, {"ok": True, "features": self.state.features})
         if path == "/api/timetable/import":
             content = value.get("content")
@@ -574,17 +403,21 @@ class Handler(BaseHTTPRequestHandler):
             # Cookie stays in this request; never saved with timetable data.
             schedule = school.fetch_schedule(str(value.get("cookie", "")), str(value.get("year", "")), str(value.get("term", "")))
             return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
-        if path == "/api/timetable/semester":
-            monday = str(value.get("first_monday", ""))
+        if path in {"/api/timetable/semester", "/api/timetable/week"}:
+            schedule = self.schedule()
+            monday = str(value.get("first_monday", schedule.get("first_monday", "")))
+            week = value.get("selected_week", schedule.get("selected_week", 0))
+            if type(week) is not int or not 0 <= week <= 60:
+                raise ValueError("周次应为 0（全学期）至 60 的整数。")
             if monday and date.fromisoformat(monday).weekday() != 0:
                 raise ValueError("第一周开始日期请选择周一。")
             if self.user:
                 schedule = self.schedule()
                 result = self.state.account_data.exchange(self.user["id"], "schedule", value.get("base_revision", schedule["revision"]),
-                    {"schedule": schedule["schedule"], "first_monday": monday})
+                    {"schedule": schedule["schedule"], "first_monday": monday, "selected_week": week})
                 return self.respond(200, {**result["data"], "revision": result["revision"]})
             with self.state.lock:
-                desktop.save_json(self.state.data_dir / "semester.json", {"first_monday": monday})
+                desktop.save_json(self.state.data_dir / "semester.json", {"first_monday": monday, "selected_week": week})
             return self.respond(200, self.state.schedule())
         self.respond(404, {"error": "接口不存在。"})
 
@@ -603,11 +436,10 @@ def make_server(state, host, port):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Omini Web：下载中心与学校课表")
+    parser = argparse.ArgumentParser(description="Omini Web：课表、备忘录与账号同步")
     parser.add_argument("--host", default="127.0.0.1", help="127.0.0.1 或本机 Tailscale IPv4")
     parser.add_argument("--port", type=int, default=18765)
     parser.add_argument("--data-dir", type=Path, default=desktop.APP_DIR / "web")
-    parser.add_argument("--download-dir", type=Path, default=Path.home() / "Downloads/Omini-Web")
     parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
     parser.add_argument("--stop-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--status-file", type=Path, help=argparse.SUPPRESS)
@@ -620,7 +452,7 @@ def main():
     if not os.environ.get("OMINI_PUBLIC_ORIGIN") and not address.is_loopback and (address.is_unspecified or len(password) < 12):
         parser.error("远程访问请绑定本机 Tailscale IPv4，并设置至少 12 位的 OMINI_WEB_PASSWORD 环境变量。")
     qt = QCoreApplication([])
-    state = WebState(args.data_dir, args.download_dir, password)
+    state = WebState(args.data_dir, password)
     try:
         server = make_server(state, args.host, args.port)
     except OSError:
@@ -630,26 +462,21 @@ def main():
     url = f"http://{args.host}:{server.server_address[1]}"
     if args.status_file:
         desktop.save_json(args.status_file, {"url": url, "version": WEB_VERSION})
-    print(f"Omini Web {WEB_VERSION}\nLocal URL: {url}\nDownload directory: {state.download_dir}\nPress Ctrl+C to stop.", flush=True)
+    print(f"Omini Web {WEB_VERSION}\nLocal URL: {url}\nPress Ctrl+C to stop.", flush=True)
     if args.open:
         webbrowser.open(url)
     def stop(*_):
         if state.stopping:
             return
         state.stopping = True
-        for task in state.manager.tasks:
-            if task.status == "queued":
-                task.status = "paused"
-        state.manager.save_tasks()
-        for worker in state.manager.workers.values():
-            worker.request_stop(pause=True)
+        qt.quit()
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     timer = QTimer()
     def tick():
         if args.stop_file and args.stop_file.exists():
             stop()
-        if state.stopping and not state.manager.workers:
+        if state.stopping:
             qt.quit()
     timer.timeout.connect(tick)
     timer.start(150)

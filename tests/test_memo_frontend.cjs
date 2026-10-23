@@ -2,6 +2,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {JSDOM}=require('../scripts/memo-editor/node_modules/jsdom');
 const root=path.join(__dirname,'..');
+const {indexedDB}=require('../.cache/web-test/node_modules/fake-indexeddb');
+const {webcrypto}=require('node:crypto');
 const dom=new JSDOM(fs.readFileSync(path.join(root,'web/index.html'),'utf8'),{url:'http://localhost/#notes',runScripts:'outside-only',pretendToBeVisual:true});
 const {window}=dom,{document}=window,$=s=>document.querySelector(s),stored=new Map();
 for(const dialog of document.querySelectorAll('dialog')){dialog.showModal=()=>{dialog.open=true;};dialog.close=()=>{dialog.open=false;};}
@@ -29,11 +31,13 @@ Object.assign(window,{
     return {ok:status===200,status,json:async()=>JSON.parse(JSON.stringify(result))};
   }
 });
+Object.assign(window,{indexedDB,TextEncoder,TextDecoder});
+Object.defineProperty(window,'crypto',{value:webcrypto});
 Object.defineProperty(window,'localStorage',{value:{getItem:k=>stored.get(k),setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)}});
 const context=dom.getInternalVMContext(),run=code=>vm.runInContext(code,context),tick=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate);};
 function replaceContent(text){run(`memoEditor.loadContent(${JSON.stringify(text)});editedMemo()`);}
 (async()=>{
-  for(const file of ['web/app.js','web/memo-editor.js','web/memos.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
   await tick();await run('loadMemos(true)');run('showMemo(memos[0])');
   assert.equal($('#memo-title').value,'云端记录');assert.equal($('#memo-preview'),null);
   const content=`\n<img src=x onerror=alert(1)>\n\n😀\u00a0文字${token}\n\n`;
@@ -42,16 +46,20 @@ function replaceContent(text){run(`memoEditor.loadContent(${JSON.stringify(text)
   assert.match($('#memo-content').textContent,/<img src=x/);
   assert.equal(run('memoEditor.getContent()'),content);
   assert.match($('#memo-content .memo-inline-image img').getAttribute('src'),/^data:image\/png;base64,/);
-  assert.ok(stored.has('omini-memo-draft:alice'));
+  await run('memoDraftQueue');
+  assert.equal(stored.has('omini-memo-draft:alice'),false);
+  assert.equal((await run("cloudDraftStore.load('omini-memo-draft:alice')")).content,content);
+  const entry=await run("cloudDraftStore.entry('omini-memo-draft:alice')");
+  assert.equal(entry.key.extractable,false);assert.ok(!Buffer.from(entry.body).includes(Buffer.from('文字')));
   assert.equal(await run('saveMemo()'),true);assert.equal(current.version,2);assert.equal(stored.has('omini-memo-draft:alice'),false);
   console.log('PASS unified editor preserves text, blank lines, emoji and image tokens without interpreting HTML');
 
   replaceContent('本机离线草稿');failSave=true;
   assert.equal(await run('saveMemo()'),false);assert.equal($('#memo-notice').hidden,false);assert.match($('#memo-notice').textContent,/暂存在本机/);
-  assert.match(stored.get('omini-memo-draft:alice'),/本机离线草稿/);
+  assert.equal((await run("memoDraftQueue.then(()=>cloudDraftStore.load('omini-memo-draft:alice'))")).content,'本机离线草稿');
   failSave=false;current={...current,version:3,content:'另一设备更新'};
   assert.equal(await run('saveMemo()'),false);assert.equal($('#memo-save-copy').hidden,false);assert.equal(run('memoEditor.getContent()'),'本机离线草稿');
-  run('requireLogin()');assert.equal(run('memoEditor.getContent()'),'');assert.match(stored.get('omini-memo-draft:alice'),/本机离线草稿/);assert.equal(stored.has('omini-memo-draft:guest'),false);
+  run('requireLogin()');assert.equal(run('memoEditor.getContent()'),'');assert.equal((await run("memoDraftQueue.then(()=>cloudDraftStore.load('omini-memo-draft:alice'))")).content,'本机离线草稿');assert.equal(stored.has('omini-memo-draft:guest'),false);
   run("setAuth({authenticated:true,user:{id:'alice',email:'alice@example.test'}})");await run('loadMemos(true)');
   assert.equal(run('memoEditor.getContent()'),'本机离线草稿');assert.equal(run('memoCurrent.version'),2);assert.equal($('#memo-save-copy').hidden,false);
   assert.equal(await run('saveMemo()'),false);assert.equal(current.content,'另一设备更新');

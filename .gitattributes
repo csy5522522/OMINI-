@@ -1,0 +1,2 @@
+# Deployment scripts must run unchanged in Linux checkouts and Git archives.
+*.sh text eol=lf

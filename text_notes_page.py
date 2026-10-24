@@ -535,7 +535,9 @@ class TextNotesPage(QWidget):
             self.pending_account = True; return
         if not self.flush(): return
         context = (self.account.url, self.account.user["id"]) if self.account and self.account.user else None
-        if context == self.context and not getattr(self, "workspace_error", False): return
+        if context == self.context and not getattr(self, "workspace_error", False):
+            if context and self.account.token: QTimer.singleShot(0, self.sync_now)
+            return
         if context:
             key = hashlib.sha256((context[0] + "\n" + context[1]).encode()).hexdigest()[:32]
             directory = self.config_path.parent / "super-memos" / key
@@ -549,6 +551,10 @@ class TextNotesPage(QWidget):
             self.sync_timer.stop()
         try:
             store = TextNotesStore(directory)
+            imported = 0
+            if context:
+                from memo_import import adopt_local_workspace
+                imported = adopt_local_workspace(self.config_path, self.config, key, store)
         except (OSError, ValueError) as error:
             self.context = None
             self.workspace_error = True
@@ -570,10 +576,15 @@ class TextNotesPage(QWidget):
         self.directory_label.setText(str(directory)); self.refresh_files()
         self.workspace_button.setToolTip("工作区与目录\n" + str(directory))
         if context: self.sync_now()
+        if context and imported and not self.worker:
+            self.set_status(f"已合并 {imported} 篇本机备忘录，原文件和历史保留；登录后继续同步。")
 
     def sync_now(self):
         if self.stopping or not self.account or not self.account.user or not self.context or self.worker: return
         if self.context != (self.account.url, self.account.user["id"]): return
+        if not self.account.token:
+            self.set_status("登录已过期，本机账号备忘录和编辑已保留；重新登录后继续同步。")
+            return
         if not self.flush(): return
         self._sync_view = (self.editor.textCursor().position(), self.editor.textCursor().anchor(), self.editor.verticalScrollBar().value(), self.editor.hasFocus())
         self.worker = MemoSyncWorker(self.store.directory, self.account.url, self.account.token, self)
@@ -674,16 +685,14 @@ class TextNotesPage(QWidget):
 
     def import_local(self):
         if not self.flush(): return
-        directory = QFileDialog.getExistingDirectory(self, "导入本机 TXT 备忘录副本", str(self.config_path.parent / "text-notes"))
+        directory = QFileDialog.getExistingDirectory(self, "导入本机备忘录及历史副本", str(self.config_path.parent / "text-notes"))
         if not directory: return
         try:
             source = TextNotesStore(Path(directory))
             if source.directory == self.store.directory: return
-            for path in source.files():
-                text, _ = read_text_file(path)
-                for asset_id in set(re.findall(r"omini-asset://([a-f0-9]{64})", text)):
-                    asset = source.memos.asset(source.owner, asset_id)
-                    self.store.memos.put_asset(self.store.owner, asset["name"], base64.b64encode(asset["data"]).decode())
-                self.import_file(path)
-            self.set_status("本机备忘录副本已导入；原文件保留。")
+            from memo_import import import_workspace
+            count = import_workspace(source, self.store)
+            self.refresh_files()
+            self.set_status(f"已合并 {count} 篇本机备忘录及历史；原文件保留。")
+            self.sync_now()
         except (OSError, ValueError) as error: self.set_status(str(error))

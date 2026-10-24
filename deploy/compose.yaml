@@ -19,7 +19,7 @@ services:
     mem_limit: 768m
   web:
     build: ..
-    image: omini-toolbox:1.2.2
+    image: omini-toolbox:1.2.3
     restart: unless-stopped
     init: true
     ports: ["127.0.0.1:18765:18765"]

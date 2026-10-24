@@ -17,13 +17,14 @@ from accounts import normalize_email, validate_password
 
 
 class AccountWorker(QThread):
-    def __init__(self, url, token, action, value, parent=None):
+    def __init__(self, url, token, action, value, parent=None, *, remember=False):
         super().__init__(parent)
         self.url, self.token, self.action, self.value = url, token, action, value
+        self.remember = remember
 
     def run(self):
         try:
-            client = AccountClient(self.url, self.token)
+            client = AccountClient(self.url, self.token, remember=self.remember)
             result = client.request(self.action, self.value)
             self.result = {"data": result, "token": client.token, "url": self.url}
         except Exception as error:
@@ -41,7 +42,7 @@ class AccountPanel(QGroupBox):
         self.store = DesktopSession(self.root / "account-session.bin")
         self.url = settings.get("account_server", DEFAULT_SERVICE)
         self.token = self.store.load(self.url)
-        self.user = self.store.user(self.url) if self.token else None
+        self.user = self.store.user(self.url)
         self.before_account_change = None
         self.worker = None
         self.stopping = False
@@ -106,6 +107,7 @@ class AccountPanel(QGroupBox):
         self.remember.toggled.connect(self.remember_changed)
         self.set_busy(False)
         if self.token: QTimer.singleShot(0, lambda: self.request("session"))
+        elif self.user: self.status.setText("登录已过期，本机账号工作区和未同步编辑均已保留；请重新登录以继续同步。")
 
     def selected_url(self):
         url = service_url(self.address.text())
@@ -114,8 +116,8 @@ class AccountPanel(QGroupBox):
                 raise ValueError("请先保存当前备忘录，再切换账号服务。")
             self.url = url
             self.token = self.store.load(url)
-            self.user = None
-            self.account_changed.emit(None)
+            self.user = self.store.user(url)
+            self.account_changed.emit(self.user)
             self.status.setText("账号服务地址已切换，请检查登录状态或重新登录。")
         self.settings["account_server"] = url
         self.save_settings(self.settings)
@@ -125,7 +127,7 @@ class AccountPanel(QGroupBox):
         for field in (self.address, self.email, self.password, self.confirm, self.access_password, self.remember):
             field.setEnabled(not busy)
         for button in (self.login_button, self.register_button, self.check_button, self.cloud_button): button.setEnabled(not busy)
-        self.logout_button.setEnabled(not busy and bool(self.token))
+        self.logout_button.setEnabled(not busy and bool(self.token or self.user))
 
     def request(self, action):
         if self.worker or self.stopping: return
@@ -135,12 +137,13 @@ class AccountPanel(QGroupBox):
             url = self.selected_url()
             value = None if action == "session" else {}
             if action in {"login", "register"}:
-                value = {"email": normalize_email(self.email.text()), "password": validate_password(self.password.text())}
+                value = {"email": normalize_email(self.email.text()), "password": validate_password(self.password.text()),
+                         "remember": self.remember.isChecked()}
                 if action == "register":
                     if self.password.text() != self.confirm.text():
                         raise ValueError("两次输入的密码不一致。")
                     value["access_password"] = self.access_password.text()
-            self.worker = AccountWorker(url, self.token, action, value, self)
+            self.worker = AccountWorker(url, self.token, action, value, self, remember=self.remember.isChecked())
             self.worker.finished.connect(self.request_finished)
             self.set_busy(True); self.status.setText("正在连接账号服务…")
             self.worker.start()
@@ -159,13 +162,17 @@ class AccountPanel(QGroupBox):
             self.status.setText(result["error"])
         else:
             data = result["data"]
+            cached_user = self.user
             self.token, self.user = result["token"], data.get("user")
             if action == "session" and not data.get("authenticated"):
                 self.token = ""
+                self.user = cached_user
             if action == "logout":
                 self.user = None
             self.status.setText("已登录：" + self.user["email"] if self.user else
                                 "已通过服务访问密码登录。" if data.get("authenticated") else "已退出登录。" if action == "logout" else "尚未登录，请使用邮箱注册或登录。")
+            if self.user and not self.token:
+                self.status.setText("登录已过期，本机账号工作区和未同步编辑均已保留；请重新登录以继续同步。")
             self.remember_changed(self.remember.isChecked())
             self.account_changed.emit(self.user)
         self.set_busy(False)
@@ -174,7 +181,7 @@ class AccountPanel(QGroupBox):
         try:
             self.settings["account_remember"] = checked
             self.save_settings(self.settings)
-            self.store.save(self.url, self.token if checked else "", self.user)
+            self.store.save(self.url, self.token if checked else "", self.user if checked else None)
         except (OSError, ValueError, RuntimeError):
             self.status.setText(self.status.text() + "\n登录状态仅在本次运行保留，本机加密保存未完成。")
 

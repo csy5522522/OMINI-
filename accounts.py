@@ -11,6 +11,7 @@ from database import Database
 
 ITERATIONS = 600_000
 SESSION_SECONDS = 12 * 3600
+REMEMBERED_SESSION_SECONDS = 30 * 24 * 3600
 EMAIL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}\Z")
 
 
@@ -90,7 +91,7 @@ class AccountStore:
         if profile and profile["role"] == "admin": user["role"] = "admin"
         return user
 
-    def issue_session(self, user):
+    def issue_session(self, user, *, remember=False):
         token = secrets.token_urlsafe(32)
         hashed = hashlib.sha256(token.encode()).hexdigest()
         with self.connect() as db:
@@ -100,10 +101,10 @@ class AccountStore:
             for old in retained[19:]:
                 db.execute("DELETE FROM sessions WHERE token_hash=?", (old["token_hash"],))
             db.execute("INSERT INTO sessions VALUES (?, ?, ?)",
-                       (hashed, user["id"], time.time() + SESSION_SECONDS))
+                       (hashed, user["id"], time.time() + (REMEMBERED_SESSION_SECONDS if remember else SESSION_SECONDS)))
         return token
 
-    def session_user(self, token):
+    def session_user(self, token, *, remember=False):
         if not isinstance(token, str) or not 20 <= len(token) <= 200:
             return None
         with self.connect() as db:
@@ -112,6 +113,11 @@ class AccountStore:
                              "WHERE token_hash=? AND expires_at>?",
                              (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
         if not row or row["disabled"]: return None
+        if remember:
+            now = time.time(); expires = now + REMEMBERED_SESSION_SECONDS
+            with self.connect() as db:
+                db.execute("UPDATE sessions SET expires_at=CASE WHEN expires_at<? THEN ? ELSE expires_at END "
+                    "WHERE token_hash=? AND expires_at>?", (expires, expires, hashlib.sha256(token.encode()).hexdigest(), now))
         user = {"id": row["id"], "email": row["email"]}
         if row["role"] == "admin": user["role"] = "admin"
         return user

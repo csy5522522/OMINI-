@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from accounts import AccountStore, normalize_email
+from accounts import AccountStore, normalize_email, SESSION_SECONDS, REMEMBERED_SESSION_SECONDS
 from account_client import DesktopSession, service_url
 
 
@@ -69,6 +69,41 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(store.load("http://127.0.0.1:18766"), "")
         store.save(url, ""); self.assertFalse(store.path.exists())
         store.path.write_text("damaged"); self.assertEqual(store.load(url), "")
+
+    def test_remembered_session_survives_overnight_but_still_expires_and_revokes(self):
+        user = self.store.register('remembered@example.test', 'password-123')
+        with patch('accounts.time.time', return_value=100000):
+            normal = self.store.issue_session(user)
+            remembered = self.store.issue_session(user, remember=True)
+        with patch('accounts.time.time', return_value=100000 + SESSION_SECONDS + 60):
+            self.assertIsNone(self.store.session_user(normal))
+            self.assertEqual(self.store.session_user(remembered), user)
+            self.store.revoke_session(remembered)
+            self.assertIsNone(self.store.session_user(remembered))
+        with patch('accounts.time.time', return_value=100000):
+            remembered = self.store.issue_session(user, remember=True)
+        with patch('accounts.time.time', return_value=100000 + REMEMBERED_SESSION_SECONDS + 1):
+            self.assertIsNone(self.store.session_user(remembered))
+
+    def test_expired_credential_retains_encrypted_workspace_identity_until_logout(self):
+        session = DesktopSession(self.root / 'session.bin')
+        user = {'id': 'fixture-id', 'email': 'fixture@example.test'}
+        session.save('https://fixture.example', '', user)
+        self.assertEqual(session.user('https://fixture.example'), user)
+        self.assertEqual(session.load('https://fixture.example'), '')
+        self.assertNotIn(user['email'], session.path.read_text())
+        session.save('https://fixture.example', '')
+        self.assertFalse(session.path.exists())
+
+    def test_remembered_client_renews_valid_session_without_replacing_token(self):
+        user = self.store.register('renew@example.test', 'password-123')
+        with patch('accounts.time.time', return_value=100000): token = self.store.issue_session(user)
+        with patch('accounts.time.time', return_value=100001):
+            self.assertEqual(self.store.session_user(token, remember=True), user)
+        with patch('accounts.time.time', return_value=100000 + SESSION_SECONDS + 60):
+            self.assertEqual(self.store.session_user(token), user)
+        self.store.revoke_session(token)
+        self.assertIsNone(self.store.session_user(token, remember=True))
 
 
 if __name__ == "__main__": unittest.main()

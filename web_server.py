@@ -220,7 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 if path == "/api/auth/session":
                     cookie = self.headers.get("Cookie")
-                    return self.respond(200, {"user": self.state.accounts.session_user(self.state.session_token(cookie)),
+                    remember = self.headers.get("X-Omini-Client") == "desktop" and self.headers.get("X-Omini-Remember") == "1"
+                    return self.respond(200, {"user": self.state.accounts.session_user(self.state.session_token(cookie), remember=remember),
                                               "authenticated": self.state.authenticated(cookie),
                                               "access_password_required": bool(self.state.password)})
                 if not self.state.authenticated(self.headers.get("Cookie")):
@@ -318,7 +319,8 @@ class Handler(BaseHTTPRequestHandler):
                         user = self.state.accounts.login(value.get("email"), value.get("password"))
                     except ValueError as error:
                         return self.respond(401, {"error": str(error)})
-                token = self.state.accounts.issue_session(user)
+                token = self.state.accounts.issue_session(user, remember=(
+                    self.headers.get("X-Omini-Client") == "desktop" and value.get("remember") is True))
                 # Rotate the initiating device's session without logging out other devices.
                 old = self.state.session_token(self.headers.get("Cookie"))
                 self.state.accounts.revoke_session(old)

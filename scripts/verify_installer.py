@@ -145,6 +145,13 @@ def main():
             state = AssistantState(ai_data); state.save({**state.data, "ui": {"tab": 4}, "quotas": {}})
             OperationHistory(ai_data).append("upgrade-and-uninstall-action-sentinel", "fixture.action")
             ai_original = {path.relative_to(ai_data): path.read_bytes() for path in ai_data.rglob('*') if path.is_file()}
+            from account_client import DesktopSession
+            session_store = DesktopSession(notes_root / "account-session.bin")
+            session_user = {"id": "verification-only", "email": "fixture@example.test"}
+            session_store.save("https://fixture.example", "verification-only-session-token", session_user)
+            session_original = session_store.path.read_bytes()
+            note_key = notes_root / "text-notes/.omini-memos.sqlite3.key"
+            key_original = note_key.read_bytes()
             obsolete = ["_internal/omini_api/runtime.py", "_internal/omini_api_page.py", "_internal/brightdata_page.py", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
                         "_internal/PySide6/Qt6WebEngineCore.dll", "_internal/PySide6/QtWebEngineCore.pyd",
                         "_internal/PySide6/QtWebEngineProcess.exe", "_internal/PySide6/resources/icudtl.dat",
@@ -161,6 +168,8 @@ def main():
             assert report["upgrade_removes_obsolete_runtimes"]
             assert user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["upgrade_preserves_user_files"] = True
+            report["upgrade_preserves_login_and_memo_key"] = (session_store.path.read_bytes() == session_original
+                and session_store.user("https://fixture.example") == session_user and note_key.read_bytes() == key_original)
             report["upgrade_preserves_ai_members_state_history"] = all((ai_data / path).read_bytes() == content
                                                                        for path, content in ai_original.items())
             uninstaller = target / "unins000.exe"
@@ -172,6 +181,8 @@ def main():
             report["uninstall_registration_removed"] = uninstall_entry(app_key) is None
             report["shortcuts_removed"] = not (shortcut_root / "Omini工具箱.lnk").exists()
             report["personal_settings_preserved"] = "keep-personal-settings" in data.read_text(encoding="utf-8")
+            report["uninstall_preserves_login_and_memo_key"] = (session_store.path.read_bytes() == session_original
+                and note_key.read_bytes() == key_original)
             report["synced_files_preserved"] = synced.read_text(encoding="utf-8") == "keep-synced-files"
             report["extra_files_preserved"] = user_file.read_text(encoding="utf-8") == "keep-extra-files"
             report["txt_notes_and_legacy_cache_preserved"] = (note_file.read_bytes() == note_original

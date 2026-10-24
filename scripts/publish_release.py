@@ -45,6 +45,7 @@ def session() -> requests.Session:
     if not token:
         raise RuntimeError("No GitHub credential is configured")
     client = requests.Session()
+    client.trust_env = False
     client.headers.update({"Authorization": "Bearer " + token,
                            "Accept": "application/vnd.github+json",
                            "X-GitHub-Api-Version": "2022-11-28"})
@@ -85,10 +86,13 @@ def publish(make_public: bool = False) -> dict:
     with session() as client:
         existing = client.get(f"{API}/repos/{REPOSITORY}/releases/tags/{tag}", timeout=30)
         if existing.status_code == 404:
-            release = api(client, "POST", f"/repos/{REPOSITORY}/releases", json={
-                "tag_name": tag, "target_commitish": commit,
-                "name": f"Omini工具箱 {APP_VERSION} — Windows 安装版",
-                "body": notes, "draft": True, "prerelease": False})
+            drafts = api(client, "GET", f"/repos/{REPOSITORY}/releases", params={"per_page": 100})
+            release = next((item for item in drafts if item["tag_name"] == tag and item["draft"]), None)
+            if release is None:
+                release = api(client, "POST", f"/repos/{REPOSITORY}/releases", json={
+                    "tag_name": tag, "target_commitish": commit,
+                    "name": f"Omini工具箱 {APP_VERSION} — Windows 安装版",
+                    "body": notes, "draft": True, "prerelease": False})
         elif existing.ok:
             release = existing.json()
         else:
@@ -99,6 +103,9 @@ def publish(make_public: bool = False) -> dict:
             (upload_name + ".sha256", len(checksum_body), hashlib.sha256(checksum_body).hexdigest(), checksum_body),
         ):
             current = next((asset for asset in assets if asset["name"] == name), None)
+            if current and release["draft"] and current.get("state") == "starter" and not current.get("digest"):
+                api(client, "DELETE", f"/repos/{REPOSITORY}/releases/assets/{current['id']}")
+                current = None
             if current:
                 if current.get("digest") != "sha256:" + digest or current["size"] != size:
                     raise RuntimeError("An existing release asset differs; use a new version")
@@ -110,7 +117,7 @@ def publish(make_public: bool = False) -> dict:
             with setup.open("rb") as stream:
                 response = client.post(release["upload_url"].split("{")[0], params={"name": name},
                                        data=content if content is not None else stream,
-                                       headers={"Content-Type": "application/octet-stream"}, timeout=(30, 600))
+                                       headers={"Content-Type": "application/octet-stream"}, timeout=(300, 1200))
             if not response.ok:
                 raise RuntimeError(f"Asset upload returned HTTP {response.status_code}")
             asset = response.json()

@@ -1454,7 +1454,8 @@ class MainWindow(QMainWindow):
         self.settings_page.account.email.setFocus()
 
     def update_account_label(self, user):
-        self.account_button.setText("✉  " + user["email"] if user else "✉  邮箱注册 / 登录")
+        suffix = "（待登录）" if user and not self.settings_page.account.token else ""
+        self.account_button.setText("✉  " + user["email"] + suffix if user else "✉  邮箱注册 / 登录")
         self.account_button.setToolTip(user["email"] if user else "打开账号注册、登录及同步设置")
 
     def prepare_account_switch(self):

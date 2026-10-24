@@ -31,15 +31,17 @@ def service_url(value):
 
 
 class AccountClient:
-    def __init__(self, url, token=""):
+    def __init__(self, url, token="", *, remember=False):
         self.url = service_url(url)
         self.token = token
+        self.remember = remember
 
     def request(self, action, value=None):
         return self.api("/api/auth/" + action, value, action=action)
 
     def api(self, path, value=None, *, action=""):
         headers = {"X-Omini-Client": "desktop"}
+        if action == "session" and self.remember: headers["X-Omini-Remember"] = "1"
         if self.token:
             headers["Cookie"] = "omini_session=" + self.token
         try:
@@ -85,7 +87,7 @@ class DesktopSession:
         return None
 
     def save(self, url, token, user=None):
-        if not token:
+        if not token and user is None:
             self.path.unlink(missing_ok=True)
             return
         protected = protect_password(json.dumps({"url": service_url(url), "token": token, "user": user}))

@@ -183,7 +183,9 @@ class DesktopAccountSync(QObject):
 
     def switch_account(self, *_):
         context = (self.panel.url, self.panel.user["id"]) if self.panel.user else None
-        if context == self.context: return
+        if context == self.context:
+            if context and self.panel.token: QTimer.singleShot(0, self.sync_now)
+            return
         if getattr(self, "backup_dialog", None): self.backup_dialog.reject()
         self.persist()
         if not self.context:
@@ -250,6 +252,9 @@ class DesktopAccountSync(QObject):
 
     def sync_now(self):
         if self.stopping or not self.context or self.worker or self.busy(): return
+        if not self.panel.token:
+            self.panel.sync_status.setText("登录已过期，本机修改已保留；重新登录后继续同步。")
+            return
         try:
             snapshot = self.snapshot()
             self.persist()

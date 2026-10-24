@@ -77,6 +77,8 @@ class DesktopSettingsTests(unittest.TestCase):
         register("first@example.test")
         first_directory = page.store.directory
         self.assertNotEqual(first_directory, guest.parent)
+        self.assertEqual(page.editor.toPlainText(), "仅保存在访客目录")
+        self.assertEqual(len(AccountClient(panel.url, panel.token).api("/api/memos")["memos"]), 1)
         note = page.store.create("账号图片备忘录", "第一稿"); page.refresh_files(note.name)
         raw = io.BytesIO(); Image.new("RGB", (32, 20), "red").save(raw, "PNG")
         page.insert_raw_image(raw.getvalue(), "图片.png")
@@ -84,8 +86,9 @@ class DesktopSettingsTests(unittest.TestCase):
         page.sync_now(); self.until(lambda: page.worker is None)
         client = AccountClient(panel.url, panel.token)
         remote = client.api("/api/memos")["memos"]
-        self.assertEqual(len(remote), 1)
-        self.assertGreaterEqual(len(client.api(f"/api/memos/{remote[0]['id']}/history")["versions"]), 2)
+        self.assertEqual(len(remote), 2)
+        image_memo = next(memo for memo in remote if memo['title'] == '账号图片备忘录')
+        self.assertGreaterEqual(len(client.api(f"/api/memos/{image_memo['id']}/history")["versions"]), 2)
         panel.logout_button.click(); self.until(lambda: panel.worker is None)
         self.assertEqual(page.store.directory, guest.parent)
         self.assertEqual(read_text_file(guest)[0], "仅保存在访客目录")
@@ -106,6 +109,41 @@ class DesktopSettingsTests(unittest.TestCase):
         self.window.open_folder_sync(); self.window.login_campus()
         self.window.open_account(); self.window.toggle_theme()
         self.assertTrue(all(not action.isVisible() for action in self.window.feature_tray_actions.values()))
+
+    def test_expired_session_keeps_account_notes_and_relogin_uploads_offline_edits(self):
+        from accounts import AccountStore
+        from account_panel import AccountPanel
+        panel = self.window.settings_page.account
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0)); port = listener.getsockname()[1]
+        panel.address.setText(f"http://127.0.0.1:{port}")
+        panel.start_service(); self.until(lambda: panel.service_ready)
+        self.window.settings_page.feature_checks["notes"].setChecked(True); self.save()
+        panel.email.setText("expiry@example.test"); panel.password.setText("FixturePassword-123"); panel.confirm.setText("FixturePassword-123")
+        panel.register_button.click(); self.until(lambda: panel.worker is None)
+        page = self.window.notes_page; self.until(lambda: page.worker is None)
+        path = page.store.create("账号离线内容", "到期前"); page.refresh_files(path.name)
+        page.sync_now(); self.until(lambda: page.worker is None)
+        directory, context, user = page.store.directory, page.context, panel.user.copy()
+        with AccountStore(self.root/'web/accounts.sqlite3').connect() as db:
+            db.execute("UPDATE sessions SET expires_at=0")
+        panel.request("session"); self.until(lambda: panel.worker is None)
+        self.assertEqual(panel.user, user); self.assertFalse(panel.token)
+        self.assertEqual(page.store.directory, directory); self.assertEqual(page.context, context)
+        self.assertIn("登录已过期", panel.status.text())
+        page.editor.setPlainText("凭据过期后继续写的内容"); self.assertTrue(page.flush())
+        with patch('text_notes_page.MemoSyncWorker') as worker:
+            page.sync_now(); worker.assert_not_called()
+        restored = AccountPanel(self.root, self.window.settings, lambda value: None)
+        self.assertEqual(restored.user, user); self.assertFalse(restored.token)
+        restored.stop(); restored.deleteLater()
+        panel.password.setText("FixturePassword-123"); panel.login_button.click()
+        self.until(lambda: panel.worker is None)
+        self.until(lambda: page.worker is not None)
+        self.until(lambda: page.worker is None)
+        self.assertEqual(page.store.directory, directory)
+        remote = AccountClient(panel.url, panel.token).api('/api/memos')['memos']
+        self.assertEqual(remote[0]['content'], "凭据过期后继续写的内容")
 
     def test_enable_disable_restore_notes_and_navigation(self):
         checks = self.window.settings_page.feature_checks

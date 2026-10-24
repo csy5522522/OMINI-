@@ -86,6 +86,8 @@ def run_settings_test(app_module):
             report["bundled_web_and_registration"] = True
             page = window.notes_page
             until(lambda: page.worker is None and page.context is not None, "Memo account did not become ready")
+            assert any(memo["content"] == "关闭功能后保留笔记" for memo in AccountClient(panel.url, panel.token).api("/api/memos")["memos"])
+            report["local_notes_auto_imported"] = True
             memo_file = page.store.create("超级备忘录验收", "桌面第一版")
             page.refresh_files(memo_file.name)
             import io
@@ -97,7 +99,7 @@ def run_settings_test(app_module):
             assert page.editor.document().documentLayout().handlerForObject(IMAGE_OBJECT) is not None
             page.sync_now(); until(lambda: page.worker is None, "Memo image upload timed out")
             api_client = AccountClient(panel.url, panel.token)
-            memo = api_client.api("/api/memos")["memos"][0]
+            memo = next(value for value in api_client.api("/api/memos")["memos"] if value["title"] == "超级备忘录验收")
             assert "omini-asset://" in memo["content"] and memo["version"] == 2
             updated = api_client.api("/api/memos", {**memo, "content": memo["content"] + "\n网页补充", "base_version": memo["version"]})["memo"]
             page.sync_now(); until(lambda: page.worker is None, "Memo download timed out")

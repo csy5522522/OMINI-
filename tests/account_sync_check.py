@@ -200,6 +200,7 @@ def main():
                 page = context.new_page(); errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(service.url + "/#ai_assistants")
+                page.locator("#account-open").click()
                 page.locator("#account-email").fill(user["email"]); page.locator("#account-password").fill("FixturePass-123")
                 page.locator("#auth-submit").click()
                 page.wait_for_function("() => cloudReady && !cloudBusy")
@@ -240,6 +241,36 @@ def main():
                 page.screenshot(path=str(DEST / "web-dark.png"), full_page=True)
                 report["screenshots"].append(str(DEST / "web-dark.png"))
                 report["checks"].append("Theme and feature preferences synchronize across all three devices")
+                # Delay a real POST while another device changes an independent field.
+                # A second local edit must use the first response's new revision.
+                previous = a.api("/api/sync")
+                conflict_count = len(previous.get("conflicts", []))
+                page.evaluate("""() => {
+                    window.raceFetch = window.fetch;
+                    window.raceBlocked = false;
+                    window.fetch = async (...args) => {
+                        if(args[0] === '/api/sync/preferences' && !window.raceBlocked) {
+                            window.raceBlocked = true;
+                            await new Promise(resolve => {window.releaseRace = resolve;});
+                        }
+                        return window.raceFetch(...args);
+                    };
+                    window.raceFirst = queueCloudData('preferences', {...cloudData('preferences'), theme:'浅色'});
+                }""")
+                page.wait_for_function("() => typeof window.releaseRace === 'function'")
+                remote_prefs = previous["resources"]["preferences"]
+                concurrency = 3 if remote_prefs["data"].get("concurrency") != 3 else 4
+                a.api("/api/sync/preferences", {"revision": remote_prefs["revision"],
+                    "data": {**remote_prefs["data"], "concurrency": concurrency}})
+                page.evaluate("() => queueCloudData('preferences', {...cloudData('preferences'), theme:'深色'})")
+                page.evaluate("() => window.releaseRace()")
+                page.wait_for_function("() => !cloudBusy && !cloudPending.preferences && cloudData('preferences').theme==='深色'")
+                page.evaluate("() => {window.fetch = window.raceFetch; delete window.releaseRace;}")
+                after_race = a.api("/api/sync")
+                assert after_race["resources"]["preferences"]["data"]["theme"] == "深色"
+                assert after_race["resources"]["preferences"]["data"]["concurrency"] == concurrency
+                assert len(after_race.get("conflicts", [])) == conflict_count
+                report["checks"].append("Delayed real browser POST preserves the latest local edit and independent remote fields without a false conflict")
                 context.set_offline(True)
                 page.locator("#cloud-model").fill("offline-browser-model")
                 page.locator("#cloud-pool-form button[type=submit]").click()

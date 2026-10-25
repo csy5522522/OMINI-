@@ -106,6 +106,7 @@ def main():
                 page = context.new_page(); errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(url+'/#notes')
+                page.locator('#account-open').click()
                 page.locator('#account-email').fill('workspace@example.test')
                 page.locator('#account-password').fill('FixturePassword-123')
                 page.locator('#login-form').evaluate('(form)=>form.requestSubmit()')

@@ -15,6 +15,7 @@ from account_client import AccountClient
 from memo_store import MemoStore, MemoConflict
 from memo_sync import sync_memos
 from text_notes import TextNotesStore, read_text_file
+from unittest.mock import patch
 
 
 def image_data():
@@ -79,6 +80,37 @@ class MemoHTTPTests(unittest.TestCase):
         client = AccountClient(self.url)
         client.request("register", {"email": name + "@example.test", "password": "FixturePass-123"})
         return client
+
+    def test_operation_retries_preserve_history_and_session_over_http(self):
+        client = self.client("response-loss")
+        token = client.token
+        payload = {"id": "c" * 32, "title": "HTTP fixture", "content": "first", "operation_id": "d" * 64}
+        first = client.api("/api/memos", payload)["memo"]
+        client.api("/api/memos", {**first, "content": "newer", "base_version": 1})
+        self.assertEqual(client.api("/api/memos", payload)["memo"], first)
+        self.assertEqual(len(client.api(f"/api/memos/{first['id']}/history")["versions"]), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            store = TextNotesStore(Path(directory))
+            path = store.create("retry fixture", "first action")
+            store.save(path, "second action", read_text_file(path)[1])
+            real_api = client.api
+            writes = 0
+            def delayed(path, value=None):
+                nonlocal writes
+                result = real_api(path, value)
+                if path == "/api/memos" and value is not None:
+                    writes += 1
+                    if writes == 2: raise ValueError("Fixture: committed response lost")
+                return result
+            with patch("memo_sync.AccountClient", return_value=client), patch.object(client, "api", side_effect=delayed):
+                with self.assertRaises(ValueError): sync_memos(directory, self.url, token)
+                self.assertEqual(sync_memos(directory, self.url, token)["conflicts"], 0)
+            memos = client.api("/api/memos")["memos"]
+            retry = next(m for m in memos if m["title"] == "retry fixture")
+            self.assertEqual(retry["content"], "second action")
+            self.assertEqual(len(client.api(f"/api/memos/{retry['id']}/history")["versions"]), 2)
+        self.assertEqual(client.token, token)
+        self.assertTrue(client.request("session")["authenticated"])
 
     def test_01_api_versions_images_and_personal_feature_settings(self):
         alice, bob = self.client("alice"), self.client("bob")

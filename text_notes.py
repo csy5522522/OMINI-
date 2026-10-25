@@ -10,7 +10,9 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
-from memo_store import MemoStore
+from contextlib import contextmanager
+from collections import Counter
+from memo_store import MemoStore, validate_text
 from memo_crypto import PREFIX, MemoCipher, atomic_bytes
 
 
@@ -60,7 +62,58 @@ class TextNotesStore:
                                existing_files=any(self.directory.rglob("*.ominote")))
         self.owner = "local"
         self._titles = {}
+        self._repair_shared_paths()
         self._migrate_files()
+
+    @contextmanager
+    def _mutation(self, *paths):
+        """Roll back mirrors as well as the database when a local save fails."""
+        before = {p: p.read_bytes() if p.exists() else None for p in paths}
+        try:
+            with self.memos.transaction():
+                yield
+        except Exception:
+            for path, raw in before.items():
+                if raw is None:
+                    path.unlink(missing_ok=True)
+                elif not path.exists() or path.read_bytes() != raw:
+                    atomic_bytes(path, raw)
+            raise
+
+    def snapshot_path(self, value):
+        mapping = self.mapping()
+        name = mapping.get(value["id"])
+        if name and name.endswith(".ominote") and all(key == value["id"] or other != name for key, other in mapping.items()):
+            return self.directory / name
+        try: path = self.target(value["title"])
+        except ValueError: path = None  # A valid cloud title need not be a valid Windows filename.
+        occupied = set(mapping.values())
+        index = 0
+        while path is None or path.exists() or path.name in occupied:
+            # The identity is hashed separately from the legacy 160-character title.
+            token = hmac.new(self.memos.cipher.key,
+                f"memo-path/{value['id']}/{index}".encode(), hashlib.sha256).hexdigest()
+            path = self.directory / (token + ".ominote")
+            index += 1
+        return path
+
+    def _repair_shared_paths(self):
+        mapping = self.mapping()
+        shared = {name for name, count in Counter(mapping.values()).items() if count > 1}
+        for name in shared:
+            original = self.directory / name
+            records = [self.memos.get(self.owner, key) for key, path in mapping.items() if path == name]
+            paths = [(value, self.snapshot_path(value)) for value in records if not value["deleted"]]
+            backup = self.directory / ".collision-backup" / (uuid.uuid4().hex + ".enc")
+            with self._mutation(original, backup, *(path for _, path in paths)):
+                if original.exists():
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    original.rename(backup)
+                for value in records: mapping.pop(value["id"], None)
+                for value, path in paths:
+                    self._write(path, value["title"], value["content"])
+                    mapping[value["id"]] = path.name
+                self.memos.set_data(self.owner, "paths", mapping)
 
     def _write(self, path, title, content):
         payload = json.dumps({"title": title, "content": content}, ensure_ascii=False).encode("utf-8")
@@ -90,11 +143,8 @@ class TextNotesStore:
                     migrated = self.memos.get_data(self.owner, "migrated_files", {})
                     memo_id = migrated.get(path.name)
                     memo = self.memos.get(self.owner, memo_id) if memo_id else self.for_path(path)
-                    destination = self.target(title)
                     mapping = self.mapping()
-                    occupied_by_other = any(key != memo["id"] and name == destination.name for key, name in mapping.items())
-                    if destination.exists() and (occupied_by_other or read_text_file(destination)[0] != text):
-                        destination = self.target(title + " " + memo["id"][:8])
+                    destination = self.snapshot_path(memo)
                     self._write(destination, title, text)
                     mapping[memo["id"]] = destination.name
                     self.memos.set_data(self.owner, "paths", mapping)
@@ -126,26 +176,25 @@ class TextNotesStore:
         return self.memos.get(self.owner, memo_id) if memo_id else self.record(path, "import")
 
     def write_snapshot(self, value, action="sync"):
+        validate_text(value["title"], value["content"])
         mapping = self.mapping()
-        path = self.directory / mapping[value["id"]] if value["id"] in mapping else self.target(value["title"])
-        desired = self.target(value["title"])
-        if value["id"] in mapping and desired != path and not desired.exists():
-            if path.exists(): path.rename(desired)
-            path = desired
-        if value["id"] not in mapping:
-            occupied = set(mapping.values())
-            if path.name in occupied or path.exists(): path = self.target(value["title"] + " " + value["id"][:8])
+        path = self.snapshot_path(value)
         try: old = self.memos.get(self.owner, value["id"])
         except ValueError: old = {"version": 0}
-        result = self.memos.save(self.owner, {**value, "deleted": bool(value["deleted"]), "base_version": old["version"]}, action=action, device="sync")
-        if value["deleted"]:
-            if path.exists():
-                trash = self.directory / ".trash"; trash.mkdir(exist_ok=True)
-                path.rename(trash / (uuid.uuid4().hex + ".ominote"))
-        else: self._write(path, value["title"], value["content"])
-        if value["deleted"]: mapping.pop(value["id"], None)
-        else: mapping[value["id"]] = path.name
-        self.memos.set_data(self.owner, "paths", mapping)
+        trash = self.directory / ".trash" / (uuid.uuid4().hex + ".ominote")
+        with self._mutation(path, trash):
+            # Remote operation identities belong to the remote version sequence.
+            saved = {key: item for key, item in value.items() if key != "operation_id"}
+            result = self.memos.save(self.owner, {**saved, "deleted": bool(value["deleted"]), "base_version": old["version"]}, action=action, device="sync")
+            if value["deleted"]:
+                if path.exists():
+                    trash.parent.mkdir(exist_ok=True)
+                    path.rename(trash)
+                mapping.pop(value["id"], None)
+            else:
+                self._write(path, value["title"], value["content"])
+                mapping[value["id"]] = path.name
+            self.memos.set_data(self.owner, "paths", mapping)
         return result, path
 
     def files(self) -> list[Path]:
@@ -168,35 +217,45 @@ class TextNotesStore:
 
     def create(self, title: str, text: str = "") -> Path:
         path = self.target(title)
+        validate_text(self._titles[path.name], text)
         # Exclusive create also guards against collisions with an external editor.
         payload = self.memos.cipher.encrypt(json.dumps({"title": self._titles[path.name], "content": text}, ensure_ascii=False).encode(), "local-mirror")
-        with path.open("xb") as stream:
-            stream.write(payload); stream.flush(); os.fsync(stream.fileno())
-        self.record(path, "create")
+        # Never roll back a pre-existing note when exclusive creation rejects a duplicate.
+        if path.exists(): raise FileExistsError(path)
+        with self._mutation(path):
+            with path.open("xb") as stream:
+                stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+            self.record(path, "create")
         return path
 
     def save(self, path: Path, text: str, expected_digest: str) -> str:
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
             raise ValueError("文件已被其他程序修改或移动。请先「另存为」保留编辑，或「重新读取」加载磁盘内容。")
-        self.for_path(path)
-        self._write(path, self._title(path), text)
-        self.record(path)
+        title = self._title(path)
+        validate_text(title, text)
+        with self._mutation(path):
+            self.for_path(path)
+            self._write(path, title, text)
+            self.record(path)
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def trash(self, path: Path) -> Path:
-        memo = self.record(path, "delete", deleted=True)
         directory = self.directory / ".trash"
         directory.mkdir(exist_ok=True)
         destination = directory / f"{uuid.uuid4().hex}.ominote"
-        path.rename(destination)
-        mapping = self.mapping(); mapping.pop(memo["id"], None)
-        self.memos.set_data(self.owner, "paths", mapping)
+        with self._mutation(path, destination):
+            memo = self.record(path, "delete", deleted=True)
+            path.rename(destination)
+            mapping = self.mapping(); mapping.pop(memo["id"], None)
+            self.memos.set_data(self.owner, "paths", mapping)
         return destination
 
     def rename(self, path, target):
-        memo = self.for_path(path)
-        self._write(path, self._titles.get(target.name, self._title(path)), read_text_file(path)[0])
-        path.rename(target)
-        mapping = self.mapping(); mapping[memo["id"]] = target.name
-        self.memos.set_data(self.owner, "paths", mapping)
-        self.record(target, "rename")
+        if target != path and target.exists(): raise FileExistsError(target)
+        with self._mutation(path, target):
+            memo = self.for_path(path)
+            self._write(path, self._titles.get(target.name, self._title(path)), read_text_file(path)[0])
+            path.rename(target)
+            mapping = self.mapping(); mapping[memo["id"]] = target.name
+            self.memos.set_data(self.owner, "paths", mapping)
+            self.record(target, "rename")

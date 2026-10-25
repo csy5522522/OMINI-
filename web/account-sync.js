@@ -5,6 +5,23 @@ let cloudConflicts = [];
 let cloudDraftSaving = 0;
 const cloudClone = value => JSON.parse(JSON.stringify(value));
 
+// Replay only edits made after a request started, on top of its acknowledged result.
+// Timetables and individual OAuth members stay atomic, as on the server.
+function rebaseCloudData(base, latest, result, path=[]) {
+  if(JSON.stringify(base)===JSON.stringify(latest))return result;
+  const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+  const atomic=path.length===1&&path[0]==='schedule'||path.length===2&&path[0]==='members';
+  if(!atomic&&object(latest)&&object(result)&&(base===undefined||object(base))){
+    const rebased={};
+    for(const key of new Set([...Object.keys(base||{}),...Object.keys(latest),...Object.keys(result)])){
+      const value=rebaseCloudData(base?.[key],latest[key],result[key],[...path,key]);
+      if(value!==undefined)rebased[key]=value;
+    }
+    return rebased;
+  }
+  return latest;
+}
+
 // OAuth drafts are encrypted in IndexedDB. CryptoKeys remain non-extractable;
 // neither credentials nor conflict snapshots are written to localStorage.
 const cloudDraftStore = {
@@ -93,6 +110,8 @@ async function loadAccountSync(force=false) {
       const result=await api(`/api/sync/${name}`,queued);if(!valid())return;
       cloudResources[name]=result;
       if(cloudPending[name]===queued)delete cloudPending[name];
+      else if(cloudPending[name])cloudPending[name]={revision:result.revision,
+        data:rebaseCloudData(queued.data,cloudPending[name].data,result.data)};
       if(result.conflict_id)cloudConflicts.unshift({id:result.conflict_id,name,created_at:Date.now()/1000});
     }
     try{await persistCloudDraft(owner,cloudPending);}catch(_){/* Retained drafts are idempotent against their original base version. */}
@@ -133,8 +152,9 @@ function renderCloudWorkspace() {
   $('#cloud-history').textContent=Object.values(data.history||{}).sort((a,b)=>String(a.time).localeCompare(String(b.time))).slice(-200).map(r=>`${r.time||''} ${r.message||''}`).join('\n')||'暂无操作记录。';
   $('#cloud-conflicts').innerHTML=cloudConflicts.slice(0,20).map(c=>`<div><button class="text-button" data-cloud-backup="${esc(c.id)}">下载 ${esc({assistants:'助手',schedule:'课表',preferences:'偏好'}[c.name]||c.name)} 冲突备份 · ${esc(new Date(c.created_at*1000).toLocaleString())}</button> <button class="button compact" data-cloud-restore="${esc(c.id)}">恢复冲突字段</button></div>`).join('');
 }
-$('#cloud-refresh').addEventListener('click',()=>loadAccountSync(true));
-$('#settings-sync-now').addEventListener('click',()=>loadAccountSync(true));
+function requestAccountSync(){if(!auth.user){showDialog('login-dialog');return;}return loadAccountSync(true);}
+$('#cloud-refresh').addEventListener('click',requestAccountSync);
+$('#settings-sync-now').addEventListener('click',requestAccountSync);
 $('#cloud-pool-form').addEventListener('submit',async event=>{
   event.preventDefault();
   try{const data=cloudData('assistants');data.pool={...data.pool,strategy:$('#cloud-strategy').value,model:$('#cloud-model').value,session_affinity:$('#cloud-affinity').checked};await queueCloudData('assistants',data);}

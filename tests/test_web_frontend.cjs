@@ -141,9 +141,10 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     console.log('PASS optional features hide navigation, guard routes, keep settings reachable and load timetable on demand');
 
     click('#account-open');assert.equal($('#settings-dialog').open,true);click('#account-logout');await tick();
-    assert.equal($('#login-dialog').open,true);assert.equal($('#settings-dialog').open,false);
+    assert.ok(!$('#login-dialog').open);assert.equal($('#settings-dialog').open,false);
     assert.equal(run('timetable'),null);
     assert.equal($('#account-label').textContent,'邮箱登录 / 注册');
+    click('#account-open');assert.equal($('#login-dialog').open,true);
     const beforeRegistration=requests.filter(r=>r.url==='/api/auth/register').length;
     click('[data-auth-mode="register"]');assert.equal($('#confirm-fields').hidden,false);
     $('#account-email').value='new@example.test';$('#account-password').value='password-123';$('#account-confirm').value='different';
@@ -152,7 +153,7 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     $('#account-confirm').value='password-123';submit('#login-form');await tick();
     assert.equal($('#login-dialog').open,false);assert.equal($('#account-password').value,'');assert.equal($('#account-confirm').value,'');
     assert.equal($('#account-label').textContent,'new@example.test');
-    click('#account-open');click('#account-logout');await tick();click('[data-auth-mode="login"]');
+    click('#account-open');click('#account-logout');await tick();click('#account-open');click('[data-auth-mode="login"]');
     failLogin=true;$('#account-email').value='member@example.test';$('#account-password').value='wrong-password';submit('#login-form');await tick();
     assert.equal($('#login-dialog').open,true);assert.match($('#login-error').textContent,/邮箱或密码/);
     failLogin=false;$('#account-password').value='password-123';submit('#login-form');await tick();

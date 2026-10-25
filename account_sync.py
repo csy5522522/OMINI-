@@ -311,6 +311,10 @@ class DesktopAccountSync(QObject):
             self.panel.sync_status.setText("同步内容已保留 · " + str(error))
 
     def apply(self, value, before):
+        from feature_config import enabled_features
+        requested = enabled_features({**self.window.settings, **value["preferences"]})
+        if not self.window.prepare_features(requested, warn=False):
+            raise ValueError("当前笔记尚未保存，云端功能设置将在保存后重试。")
         self.window.settings.update(value["preferences"])
         if value["schedule"] != before["schedule"]:
             schedule = value["schedule"]

@@ -522,8 +522,10 @@ class TextNotesPage(QWidget):
         self.notes.viewport().update()
 
     def stop(self):
+        if not self.flush(): return False
         self.stopping = True
-        self.flush(); self.timer.stop(); self.sync_timer.stop()
+        self.timer.stop(); self.sync_timer.stop()
+        return True
 
     def open_account(self):
         window = self.window()

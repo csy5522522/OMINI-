@@ -35,16 +35,14 @@ def import_workspace(source, target):
                      pending.get("target_version") == previous["version"] and
                      all(previous[k] == version[k] for k in ("title", "content", "deleted")))
             if not retry:
-                planned = target.directory / target.mapping().get(target_id, target.target(version["title"]).name)
-                if target_id not in target.mapping() and (planned.exists() or planned.name in target.mapping().values()):
-                    planned = target.target(version["title"] + " " + target_id[:8])
+                planned = target.snapshot_path({**version, "id": target_id})
                 imported[memo["id"]] = {"id": target_id, "version": version["version"] - 1,
                     "pending": version["version"], "target_version": (previous["version"] if previous else 0) + 1,
                     "path": planned.name}
                 target.memos.set_data(target.owner, "local_imports", imported)
                 target.write_snapshot({**version, "id": target_id}, version["action"])
             else:
-                path = target.directory / pending["path"]
+                path = target.snapshot_path({**version, "id": target_id})
                 mapping = target.mapping()
                 if not version["deleted"]:
                     target._write(path, version["title"], version["content"])

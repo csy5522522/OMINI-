@@ -8,6 +8,9 @@ import re
 import secrets
 import time
 import os
+import hmac
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from memo_crypto import MemoCipher, PREFIX
 from database import Database
@@ -23,6 +26,13 @@ def identifier(value):
     return value
 
 
+def validate_text(title, content):
+    if not isinstance(title, str) or not title.strip() or len(title) > 240:
+        raise ValueError("标题需为 1 至 240 个字符。")
+    if not isinstance(content, str) or len(content.encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError("每篇备忘录正文最多 2 MB。")
+
+
 def snapshot(row):
     value = dict(row)
     value["deleted"] = bool(value["deleted"])
@@ -32,6 +42,7 @@ def snapshot(row):
 class MemoStore:
     def __init__(self, database, *, key_root=None, existing_files=False):
         self.database = database if isinstance(database, Database) else Database(database, local=True)
+        self._transactions = threading.local()
         with self.database.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS memos (
@@ -59,6 +70,12 @@ class MemoStore:
                 CREATE TABLE IF NOT EXISTS memo_storage_meta (
                     name VARCHAR(80) PRIMARY KEY, value LONGTEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS memo_operations (
+                    user_id VARCHAR(64) NOT NULL, memo_id VARCHAR(64) NOT NULL,
+                    operation_id VARCHAR(64) NOT NULL, fingerprint VARCHAR(64) NOT NULL,
+                    version INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, memo_id, operation_id)
+                );
             """)
             columns = db.execute("SHOW COLUMNS FROM memo_assets" if self.database.mysql else "PRAGMA table_info(memo_assets)").fetchall()
             if "raw_size" not in {row["Field" if self.database.mysql else "name"] for row in columns}:
@@ -78,6 +95,28 @@ class MemoStore:
             self.cipher.decrypt(marker["value"], "cipher-check")
         else:
             self._migrate()
+
+    @contextmanager
+    def transaction(self):
+        """Share one commit across a memo action, its mapping and local sync metadata."""
+        if getattr(self._transactions, "connection", None) is not None:
+            yield
+            return
+        with self.database.connect() as db:
+            self._transactions.connection = db
+            try:
+                yield
+            finally:
+                del self._transactions.connection
+
+    @contextmanager
+    def _connect(self):
+        db = getattr(self._transactions, "connection", None)
+        if db is not None:
+            yield db
+        else:
+            with self.database.connect() as db:
+                yield db
 
     def _has_encrypted_rows(self):
         with self.database.connect() as db:
@@ -157,13 +196,13 @@ class MemoStore:
                 os.replace(temporary, str(temporary) + ".enc")
 
     def listing(self, user_id, *, include_deleted=True):
-        with self.database.connect() as db:
+        with self._connect() as db:
             rows = db.execute("SELECT * FROM memos WHERE user_id=? ORDER BY updated DESC", (user_id,)).fetchall()
         return [self._decoded(row) for row in rows if include_deleted or not row["deleted"]]
 
     def get(self, user_id, memo_id):
         identifier(memo_id)
-        with self.database.connect() as db:
+        with self._connect() as db:
             row = db.execute("SELECT * FROM memos WHERE user_id=? AND id=?", (user_id, memo_id)).fetchone()
         if not row: raise ValueError("备忘录不存在。")
         return self._decoded(row)
@@ -171,20 +210,34 @@ class MemoStore:
     def save(self, user_id, value, *, action="edit", device="web"):
         memo_id = identifier(value.get("id") or secrets.token_hex(16))
         title, content = value.get("title", "未命名备忘录"), value.get("content", "")
-        if not isinstance(title, str) or not title.strip() or len(title) > 240:
-            raise ValueError("标题需为 1 至 240 个字符。")
-        if not isinstance(content, str) or len(content.encode("utf-8")) > 2 * 1024 * 1024:
-            raise ValueError("每篇备忘录正文最多 2 MB。")
+        validate_text(title, content)
         base = value.get("base_version", 0)
         if type(base) is not int or base < 0: raise ValueError("请提供有效的基础版本。")
         deleted = value.get("deleted", False)
         if type(deleted) is not bool: raise ValueError("删除标识有误。")
+        operation = value.get("operation_id")
+        fingerprint = None
+        if operation is not None:
+            identifier(operation)
+            body = json.dumps([memo_id, title.strip(), content, base, deleted, action], ensure_ascii=False).encode()
+            fingerprint = hmac.new(self.cipher.key, body, hashlib.sha256).hexdigest()
         now = time.time()
-        with self.database.connect() as db:
+        with self._connect() as db:
             # Lock the existing row in MySQL; SQLite's guarded UPDATE detects concurrent writes.
             row = db.execute("SELECT version FROM memos WHERE user_id=? AND id=?" +
                 (" FOR UPDATE" if self.database.mysql else ""), (user_id, memo_id)).fetchone()
             current = row["version"] if row else 0
+            if operation:
+                committed = db.execute("SELECT * FROM memo_operations WHERE user_id=? AND memo_id=? AND operation_id=?",
+                    (user_id, memo_id, operation)).fetchone()
+                if committed:
+                    if committed["fingerprint"] != fingerprint:
+                        raise ValueError("操作标识已用于另一项编辑。")
+                    saved = db.execute("SELECT * FROM memo_versions WHERE user_id=? AND memo_id=? AND version=?",
+                        (user_id, memo_id, committed["version"])).fetchone()
+                    saved = self._decoded(saved, "memo_versions")
+                    return {"user_id": user_id, "id": memo_id, **{k: saved[k] for k in ("title", "content", "version", "deleted")},
+                            "updated": saved["created"]}
             if base != current: raise MemoConflict("已有更新版本，请先同步；本次编辑已保留。")
             version = current + 1
             context = {"user_id": user_id, "id": memo_id, "version": version}
@@ -205,13 +258,23 @@ class MemoStore:
                 action = "create"
             db.execute("INSERT INTO memo_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (user_id, memo_id, version, history_title, history_content, int(deleted), action[:32], now, device[:80]))
-        return self.get(user_id, memo_id)
+            if operation:
+                db.execute("INSERT INTO memo_operations VALUES (?, ?, ?, ?, ?)",
+                    (user_id, memo_id, operation, fingerprint, version))
+        # Return this action's snapshot even if another writer commits immediately.
+        return {"user_id": user_id, "id": memo_id, "title": title.strip(), "content": content,
+                "version": version, "deleted": deleted, "updated": now}
 
     def history(self, user_id, memo_id):
         self.get(user_id, memo_id)
-        with self.database.connect() as db:
-            return [self._decoded(row, "memo_versions") for row in db.execute("SELECT * FROM memo_versions WHERE user_id=? "
+        with self._connect() as db:
+            operations = {row["version"]: row["operation_id"] for row in db.execute(
+                "SELECT version, operation_id FROM memo_operations WHERE user_id=? AND memo_id=?", (user_id, memo_id)).fetchall()}
+            versions = [self._decoded(row, "memo_versions") for row in db.execute("SELECT * FROM memo_versions WHERE user_id=? "
                 "AND memo_id=? ORDER BY version DESC", (user_id, memo_id)).fetchall()]
+            for version in versions:
+                if version["version"] in operations: version["operation_id"] = operations[version["version"]]
+            return versions
 
     def restore(self, user_id, memo_id, version, base_version, device="web"):
         if type(version) is not int: raise ValueError("请选择历史版本。")
@@ -255,12 +318,12 @@ class MemoStore:
         return self._decoded(row, "memo_assets")
 
     def get_data(self, user_id, name, default=None):
-        with self.database.connect() as db:
+        with self._connect() as db:
             row = db.execute("SELECT value FROM workspace_data WHERE user_id=? AND name=?", (user_id, name)).fetchone()
         return json.loads(self.cipher.read_text(row["value"], f"workspace_data/{user_id}/{name}//value")) if row else default
 
     def set_data(self, user_id, name, value):
         encoded = self.cipher.text(json.dumps(value, ensure_ascii=False), f"workspace_data/{user_id}/{name}//value")
-        with self.database.connect() as db:
+        with self._connect() as db:
             db.execute("DELETE FROM workspace_data WHERE user_id=? AND name=?", (user_id, name))
             db.execute("INSERT INTO workspace_data VALUES (?, ?, ?)", (user_id, name, encoded))

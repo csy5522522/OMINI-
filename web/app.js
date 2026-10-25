@@ -38,7 +38,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 let selectedWeek = 0, savedSelectedWeek = 0;
 let timetableRevision = 0;
 let timetable = null, savedTimetable = null, firstMonday = '', demo = false, connected = false;
-let toastTimer, polling = false;
+let toastTimer, polling = false, activePage = '';
 let features = {timetable:true,notes:true,ai_assistants:true}, auth = {authenticated:false,user:null,access_password_required:false};
 let authMode = 'login', authGeneration = 0, timetableLoaded = false, timetableLoading = false;
 const terms = {3:'第一学期',12:'第二学期',16:'第三学期'};
@@ -66,6 +66,7 @@ function setConnection(ok) {
 function route() {
   const wanted = ['timetable','notes','ai_assistants'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'timetable';
   const page = features[wanted] ? wanted : Object.keys(features).find(key=>features[key]) || 'workspace';
+  const entering=activePage!==page;activePage=page;
   if (location.hash !== `#${page}`) location.hash = `#${page}`;
   $$('.page').forEach(el => { el.hidden = el.id !== `page-${page}`; });
   $$('.nav-item[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
@@ -73,7 +74,7 @@ function route() {
   $('#breadcrumb-page').textContent = title;
   document.title = `${title} · Omini`;
   if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();
-  if (page === 'notes' && connected && typeof loadMemos === 'function') loadMemos();
+  if (page === 'notes' && connected && typeof loadMemos === 'function') loadMemos(entering);
   if (page === 'ai_assistants' && connected && typeof loadAccountSync === 'function') loadAccountSync();
 }
 function applyFeatures(selected = features) {
@@ -102,12 +103,11 @@ $('#mobile-theme').addEventListener('click', () => setTheme(document.documentEle
 $('#mobile-settings').addEventListener('click', () => showDialog('settings-dialog'));
 $$('[data-close]').forEach(el => el.addEventListener('click', () => $(`#${el.dataset.close}`).close()));
 $$('dialog').forEach(el => el.addEventListener('click', e => {
-  if (el.id === 'login-dialog') return;
   const r = el.getBoundingClientRect();
   if (e.target === el && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) el.close();
 }));
-$('#login-dialog').addEventListener('cancel', e => {if(!auth.authenticated)e.preventDefault();});
 function setAuth(value) {
+  if(auth.user?.id!==value.user?.id||Boolean(auth.authenticated)!==Boolean(value.authenticated))resetWorkspace();
   auth = value;
   const label = auth.user?.email || (auth.authenticated ? '工作空间账号' : '邮箱登录 / 注册');
   $('#account-label').textContent = label; $('#account-open').title = label;
@@ -116,6 +116,7 @@ function setAuth(value) {
   $('#account-logout').hidden = !auth.authenticated;
   $('#access-mode').hidden = !auth.access_password_required;
   setAuthMode(authMode);
+  if(typeof renderMemoAccess==='function'){renderMemoAccess();renderMemoList();}
 }
 function setAuthMode(mode) {
   authMode = mode === 'access' && !auth.access_password_required ? 'login' : mode;
@@ -139,11 +140,19 @@ function resetWorkspace() {
   updateWeekOptions(); renderTimetable(); setConnection(false);
   $('#detail-content').textContent=''; $('#school-cookie').value='';
   $('#detail-title').textContent='';
+  $('#import-file').disabled=false;$('#import-file').value='';$('#import-status').textContent='';
+  $('#online-submit').disabled=false;$('#online-submit').textContent='读取课表';
 }
 function requireLogin() {
-  resetWorkspace(); setAuth({...auth,authenticated:false,user:null});
+  setAuth({...auth,authenticated:false,user:null});
   $$('dialog').forEach(dialog=>{if(dialog.id!=='login-dialog'&&dialog.open)dialog.close();});
-  showDialog('login-dialog');
+  restoreGuestFeatures();
+  setConnection(true);
+}
+function restoreGuestFeatures(){
+  let selected={timetable:true,notes:true,ai_assistants:true};
+  try{const saved=JSON.parse(localStorage.getItem('omini-guest-features')||'{}');for(const key of Object.keys(selected))if(typeof saved?.[key]==='boolean')selected[key]=saved[key];}catch(_){}
+  applyFeatures(selected);
 }
 function openAccount(){if(auth.authenticated)showDialog('settings-dialog');else showDialog('login-dialog');}
 $('#account-open').addEventListener('click',openAccount);
@@ -151,7 +160,7 @@ $('#account-sidebar').addEventListener('click',openAccount);
 $('#choose-features').addEventListener('click',()=>showDialog('settings-dialog'));
 $('#account-logout').addEventListener('click',async()=>{
   const button=$('#account-logout');button.disabled=true;
-  try{await api('/api/auth/logout',{});requireLogin();toast('已退出登录');}
+  try{await api('/api/auth/logout',{});requireLogin();setConnection(true);toast('已退出登录，可继续浏览');}
   catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
 $('#login-form').addEventListener('submit', async e => {
@@ -168,7 +177,7 @@ $('#login-form').addEventListener('submit', async e => {
   finally { button.disabled=false; }
 });
 async function refreshState() {
-  if (polling) return;
+  if (polling||!auth.authenticated) return;
   polling=true;const generation=authGeneration;
   try {const state=await api('/api/state');if(generation!==authGeneration)return;
     setConnection(true);applyFeatures(state.features);$('#version-label').textContent=state.version;
@@ -179,10 +188,15 @@ $('#settings-open').addEventListener('click',()=>showDialog('settings-dialog'));
 $('#settings-form').addEventListener('submit',async e=>{
   e.preventDefault();const button=$('#settings-save');button.disabled=true;
   try{const selected={timetable:$('#feature-timetable').checked,notes:$('#feature-notes').checked,ai_assistants:$('#feature-ai_assistants').checked};
+    if(!auth.authenticated){
+      try{localStorage.setItem('omini-guest-features',JSON.stringify(selected));}catch(_){}
+      $('#settings-dialog').close();applyFeatures(selected);toast('浏览偏好已保存在当前浏览器');return;
+    }
     const result=await api('/api/settings',{features:selected});
     $('#settings-dialog').close();applyFeatures(result.features||selected);await refreshState();toast('功能加载与偏好设置已保存');
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
+$('#chatgpt-reset-open').addEventListener('click',()=>showDialog('chatgpt-reset-dialog'));
 
 // Timetable dates use local calendar days to avoid DST offset errors.
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -248,7 +262,7 @@ $('#schedule-grid').addEventListener('click',e=>{
 });
 async function selectWeek(week) {
   selectedWeek=week;$('#week-select').value=week;renderTimetable();
-  if(demo)return;
+  if(demo||!auth.authenticated)return;
   savedSelectedWeek=week;const generation=authGeneration;
   try {
     if(auth.user){
@@ -263,25 +277,33 @@ $('#prev-week').addEventListener('click',()=>{selectWeek(Math.max(1,selectedWeek
 $('#next-week').addEventListener('click',()=>{selectWeek(Math.min(maxWeeks(),selectedWeek+1));});
 $('#current-week').addEventListener('click',()=>{if(!firstMonday){showDialog('semester-dialog');return;}const current=currentWeek();if(current<1||current>maxWeeks()){toast('当前日期不在所设学期内，请检查开学日期。',true);return;}selectWeek(current);});
 $('#semester-open').addEventListener('click',()=>showDialog('semester-dialog'));
-$('#semester-form').addEventListener('submit',async e=>{e.preventDefault();if(demo){toast('请先退出示例预览，再设置自己的学期。',true);return;}try{acceptTimetable(await api('/api/timetable/semester',{first_monday:$('#first-monday').value,base_revision:timetableRevision}));$('#semester-dialog').close();toast('学期日期已保存');}catch(error){toast(error.message,true);}});
+$('#semester-form').addEventListener('submit',async e=>{
+  e.preventDefault();if(demo){toast('请先退出示例预览，再设置自己的学期。',true);return;}
+  if(!auth.authenticated){showDialog('login-dialog');return;}
+  const generation=authGeneration;
+  try{const data=await api('/api/timetable/semester',{first_monday:$('#first-monday').value,base_revision:timetableRevision});if(generation!==authGeneration)return;acceptTimetable(data);$('#semester-dialog').close();toast('学期日期已保存');}
+  catch(error){if(generation===authGeneration)toast(error.message,true);}
+});
 $('#import-open').addEventListener('click',()=>showDialog('import-dialog'));
 $('#import-file').addEventListener('change',async e=>{
-  const input=e.target,file=input.files[0];if(!file)return;
+  const input=e.target,file=input.files[0],generation=authGeneration,revision=timetableRevision;if(!file)return;
+  if(!auth.authenticated){input.value='';showDialog('login-dialog');return;}
   if(file.size>24*1024*1024){toast('请选择小于 24 MB 的文件。',true);input.value='';return;}
   input.disabled=true;$('#import-status').textContent='正在解析课表…';
-  try{const data=await api('/api/timetable/import',{content:await file.text(),base_revision:timetableRevision});acceptTimetable(data);$('#import-dialog').close();toast(`已导入 ${data.schedule.courses.length} 条课程安排`);}
-  catch(error){$('#import-status').textContent=error.message;toast(error.message,true);}
-  finally{input.disabled=false;input.value='';}
+  try{const content=await file.text();if(generation!==authGeneration)return;const data=await api('/api/timetable/import',{content,base_revision:revision});if(generation!==authGeneration)return;acceptTimetable(data);$('#import-dialog').close();toast(`已导入 ${data.schedule.courses.length} 条课程安排`);}
+  catch(error){if(generation===authGeneration){$('#import-status').textContent=error.message;toast(error.message,true);}}
+  finally{if(generation===authGeneration){input.disabled=false;input.value='';}}
 });
 function openSchool(){window.open(schoolLogin,'_blank','noopener,noreferrer');}
 $('#school-login').addEventListener('click',openSchool);$('#online-login').addEventListener('click',openSchool);
 $('#online-open').addEventListener('click',()=>{$('#school-year').value=timetable?.year||new Date().getFullYear();$('#school-term').value=timetable?.term||'3';showDialog('online-dialog');});
 $('#online-dialog').addEventListener('close',()=>{$('#school-cookie').value='';});
 $('#online-form').addEventListener('submit',async e=>{
-  e.preventDefault();const button=$('#online-submit');button.disabled=true;button.textContent='正在读取…';
-  try{const data=await api('/api/timetable/refresh',{cookie:$('#school-cookie').value,year:$('#school-year').value,term:$('#school-term').value,base_revision:timetableRevision});acceptTimetable(data);$('#online-dialog').close();toast('课表已更新');}
-  catch(error){toast(error.message,true);}
-  finally{button.disabled=false;button.textContent='读取课表';$('#school-cookie').value='';}
+  e.preventDefault();if(!auth.authenticated){$('#school-cookie').value='';showDialog('login-dialog');return;}
+  const button=$('#online-submit'),generation=authGeneration;button.disabled=true;button.textContent='正在读取…';
+  try{const data=await api('/api/timetable/refresh',{cookie:$('#school-cookie').value,year:$('#school-year').value,term:$('#school-term').value,base_revision:timetableRevision});if(generation!==authGeneration)return;acceptTimetable(data);$('#online-dialog').close();toast('课表已更新');}
+  catch(error){if(generation===authGeneration)toast(error.message,true);}
+  finally{if(generation===authGeneration){button.disabled=false;button.textContent='读取课表';$('#school-cookie').value='';}}
 });
 $('#export-schedule').addEventListener('click',()=>{if(!timetable||demo)return;const url=URL.createObjectURL(new Blob([JSON.stringify(timetable,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`Omini-课表-${timetable.year}-${timetable.term}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('课表 JSON 已导出');});
 $('#demo-toggle').addEventListener('click',()=>{
@@ -292,14 +314,14 @@ $('#demo-toggle').addEventListener('click',()=>{
   selectedWeek=1;$('#demo-toggle').textContent='退出示例预览';updateWeekOptions();renderTimetable();toast('正在预览示例课表，你的数据保持原样');
 });
 async function loadTimetable(){
-  if(timetableLoading||!features.timetable||!connected)return;
+  if(timetableLoading||!features.timetable||!connected||!auth.authenticated)return;
   timetableLoading=true;const generation=authGeneration;
   try{const data=await api('/api/timetable');if(generation===authGeneration&&features.timetable)acceptTimetable(data);}
   catch(error){if(generation===authGeneration)toast(error.message,true);}finally{timetableLoading=false;}
 }
 async function loadInitial(){
   const generation=authGeneration;
-  try{const session=await api('/api/auth/session');if(generation!==authGeneration)return;setAuth(session);if(!auth.authenticated){requireLogin();return;}await refreshState();}
+  try{const session=await api('/api/auth/session');if(generation!==authGeneration)return;setAuth(session);if(!auth.authenticated){setConnection(true);restoreGuestFeatures();return;}await refreshState();}
   catch(error){setConnection(false);toast(error.message,true);}
 }
 updateWeekOptions();renderTimetable();setAuth(auth);loadInitial();

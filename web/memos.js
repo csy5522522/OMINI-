@@ -44,6 +44,17 @@ function memoDate(timestamp){
   const date=new Date(timestamp*1000),today=new Date();
   return date.toDateString()===today.toDateString()?`今天 ${date.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`:date.toLocaleDateString('zh-CN',{month:'short',day:'numeric'});
 }
+function updateMemoRefresh(){memoEl('memo-refresh').disabled=memoLoading||memoBusy;}
+function renderMemoAccess(){
+  const signedIn=Boolean(auth.user);
+  memoEl('memo-search').disabled=!signedIn;
+  memoEl('memo-empty-title').textContent=signedIn?'让想法在这里停留':'登录后，找回你的想法';
+  memoEl('memo-empty-description').textContent=signedIn?'当前账号暂无已同步的备忘录。请确认客户端已完成同步，且使用相同的服务地址与邮箱账号。':'可以先浏览工具箱。需要查看客户端已同步的备忘录时，再选择登录。';
+  memoEl('memo-empty-new').textContent=signedIn?'新建备忘录':'邮箱登录 / 注册';
+  memoEl('memo-new').title=memoEl('memo-new').ariaLabel=signedIn?'新建备忘录':'登录后新建备忘录';
+  updateMemoRefresh();
+  if(!memoCurrent)memoStatus(signedIn?'当前账号暂无已同步的备忘录':'登录后查看已同步的备忘录');
+}
 function renderMemoList(){
   const root=memoEl('memo-list'),scroll=root.scrollTop;root.replaceChildren();
   const query=memoEl('memo-search').value.toLowerCase().trim();
@@ -53,6 +64,11 @@ function renderMemoList(){
     memoEl(id).classList.toggle('selected',selected);memoEl(id).setAttribute('aria-pressed',String(selected));
   }
   const visible=memos.filter(m=>Boolean(m.deleted)===memoTrash&&`${m.title}\n${m.content}`.toLowerCase().includes(query));
+  if(!visible.length){
+    const empty=document.createElement('p');empty.className='memo-list-empty';
+    empty.textContent=!auth.user?'登录后显示你的备忘录':query?'没有匹配的备忘录':memoTrash?'回收站为空':'暂无已同步的备忘录';
+    root.append(empty);
+  }
   for(const memo of visible){
     const button=document.createElement('button');button.className='memo-item'+(memoCurrent?.id===memo.id?' selected':'');button.setAttribute('aria-current',String(memoCurrent?.id===memo.id));
     const title=document.createElement('strong');title.textContent=memo.title;
@@ -63,7 +79,6 @@ function renderMemoList(){
       showMemo(memos.find(m=>m.id===memo.id)||memo);
     });root.append(button);
   }
-  if(!visible.length){const p=document.createElement('p');p.className='memo-list-empty';p.textContent=query?'没有匹配的备忘录':memoTrash?'回收站为空':'还没有备忘录\n点击 + 记录第一个想法';root.append(p);}
   root.scrollTop=scroll;
 }
 function showMemo(memo,openDocument=true){
@@ -78,15 +93,17 @@ function showMemo(memo,openDocument=true){
   document.querySelector('.memo-document-scroll').scrollTop=0;
   memoStatus(memo?memo.deleted?'回收站 · 内容与历史均已保留':`已同步 · ${memoDate(memo.updated)}`:'选择或新建备忘录');
   memoNotice();renderMemoList();
+  renderMemoAccess();
 }
 async function loadMemos(force=false){
   if(!auth.user||!features.notes||memoLoading||memoBusy||memoDirty||memoComposing||memoLoaded&&!force)return;
   memoLoading=true;const generation=authGeneration;
+  renderMemoAccess();if(!memoLoaded)memoStatus('正在读取已同步的备忘录…','saving');
   try{
     const data=await api('/api/memos');if(generation!==authGeneration)return;
     // The user may start typing while the listing request is in flight.
     if(memoDirty||memoBusy||memoComposing)return;
-    memos=data.memos;memoLoaded=true;
+    memos=data.memos;
     let draft=null;try{draft=await readMemoDraft();}catch(_){memoNotice('加密草稿读取失败，请检查浏览器存储。');}
     if(generation!==authGeneration||memoDirty||memoBusy||memoComposing)return;
     if(draft&&typeof draft.content==='string'&&typeof draft.title==='string'&&!memoCurrent){
@@ -100,9 +117,10 @@ async function loadMemos(force=false){
         const wasOpen=memoEl('memo-workbench').classList.contains('show-document');showMemo(current,wasOpen);
         memoEditor.restoreSelection(selection.from,selection.to);document.querySelector('.memo-document-scroll').scrollTop=scroll;
       }else renderMemoList();
-    }else{renderMemoList();if(force&&memos.length)showMemo(memos.find(m=>Boolean(m.deleted)===memoTrash)||null,false);}
+    }else{showMemo(memos.find(m=>Boolean(m.deleted)===memoTrash)||null,false);}
+    memoLoaded=true;
   }catch(error){if(generation===authGeneration){memoStatus('同步暂未完成','error');memoNotice(error.message);}}
-  finally{if(generation===authGeneration)memoLoading=false;}
+  finally{if(generation===authGeneration){memoLoading=false;updateMemoRefresh();}}
 }
 function editedMemo(){
   if(!memoCurrent||memoCurrent.deleted)return;
@@ -112,7 +130,7 @@ function editedMemo(){
 async function saveMemo(){
   if(memoComposing||memoEditor.isComposing()){clearTimeout(memoTimer);memoTimer=setTimeout(saveMemo,900);return false;}
   if(!memoCurrent||!memoDirty)return true;if(memoBusy)return false;
-  clearTimeout(memoTimer);memoBusy=true;const generation=authGeneration,operation=++memoOperation;
+  clearTimeout(memoTimer);memoBusy=true;updateMemoRefresh();const generation=authGeneration,operation=++memoOperation;
   const current={...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()};
   memoStatus('正在保存…','saving');
   try{
@@ -126,7 +144,7 @@ async function saveMemo(){
   }catch(error){
     if(generation===authGeneration){persistMemoDraft();memoStatus(error.status===409?'存在版本冲突':'草稿已保留在本机','error');memoNotice(error.status===409?'云端已有更新，你的编辑已保留。请保存冲突副本。':`${error.message} 编辑已暂存在本机，请稍后重试。`,error.status===409,error.status!==409);}
     return false;
-  }finally{if(operation===memoOperation)memoBusy=false;}
+  }finally{if(operation===memoOperation){memoBusy=false;updateMemoRefresh();}}
 }
 async function memoAsset(id){
   if(!memoAssets.has(id)){
@@ -145,6 +163,7 @@ async function switchMemoFolder(trash){
   memoTrash=trash;showMemo(null,false);
 }
 async function newMemo(){
+  if(!auth.user){showDialog('login-dialog');return;}
   if(memoDirty&&!await saveMemo())return;
   const generation=authGeneration;
   try{const result=await api('/api/memos',{title:'未命名备忘录',content:'',base_version:0});if(generation!==authGeneration)return;memos.unshift(result.memo);memoTrash=false;memoEl('memo-search').value='';showMemo(result.memo);memoEl('memo-title').focus();memoEl('memo-title').select();}
@@ -176,18 +195,23 @@ memoEl('memo-title').addEventListener('compositionstart',()=>{memoComposing=true
 memoEl('memo-title').addEventListener('compositionend',()=>{memoComposing=false;if(memoDirty)memoTimer=setTimeout(saveMemo,900);});
 for(const id of ['memo-save','memo-retry'])memoEl(id).addEventListener('click',()=>{closeMemoMenu();saveMemo();});
 for(const id of ['memo-new','memo-empty-new'])memoEl(id).addEventListener('click',newMemo);
+memoEl('memo-refresh').addEventListener('click',async()=>{
+  if(!auth.user){showDialog('login-dialog');return;}
+  if(memoDirty&&!await saveMemo())return;
+  await loadMemos(true);
+});
 memoEl('memo-delete').addEventListener('click',()=>{closeMemoMenu();changeMemoDeleted(true);});memoEl('memo-restore').addEventListener('click',()=>changeMemoDeleted(false));
 memoEl('memo-save-copy').addEventListener('click',async()=>{
   if(!memoCurrent||memoBusy)return;clearTimeout(memoTimer);const generation=authGeneration,id=memoCurrent.id;
   const originalTitle=memoEl('memo-title').value,title=(originalTitle+'（冲突副本）').slice(0,240),content=memoEditor.getContent();
-  memoBusy=true;const operation=++memoOperation;
+  memoBusy=true;updateMemoRefresh();const operation=++memoOperation;
   try{
     const result=await api('/api/memos',{title,content,base_version:0});if(generation!==authGeneration)return;
     memos.unshift(result.memo);
     if(memoCurrent?.id===id&&memoEditor.getContent()===content&&memoEl('memo-title').value===originalTitle){persistMemoDraft(null);showMemo(result.memo);memoStatus('冲突副本已保存');}
     else{persistMemoDraft();memoNotice('已保存一份冲突副本。刚刚继续输入的编辑仍保留在当前草稿。',true);renderMemoList();}
   }catch(error){if(generation===authGeneration)memoNotice(error.message,true);}
-  finally{if(operation===memoOperation)memoBusy=false;}
+  finally{if(operation===memoOperation){memoBusy=false;updateMemoRefresh();}}
 });
 memoEl('memo-image-button').addEventListener('click',()=>{if(memoImagePoint)memoEditor.releaseBookmark(memoImagePoint);memoImagePoint=memoEditor.bookmark();memoEl('memo-image').click();});
 memoEl('memo-image').addEventListener('change',event=>{insertMemoImage(event.target.files[0],memoImagePoint);memoImagePoint=null;event.target.value='';});

@@ -35,10 +35,15 @@ Object.assign(window,{indexedDB,TextEncoder,TextDecoder});
 Object.defineProperty(window,'crypto',{value:webcrypto});
 Object.defineProperty(window,'localStorage',{value:{getItem:k=>stored.get(k),setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)}});
 const context=dom.getInternalVMContext(),run=code=>vm.runInContext(code,context),tick=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate);};
+async function until(test){for(let i=0;i<200&&!test();i++)await tick();assert.ok(test());}
 function replaceContent(text){run(`memoEditor.loadContent(${JSON.stringify(text)});editedMemo()`);}
 (async()=>{
   for(const file of ['web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
-  await tick();await run('loadMemos(true)');run('showMemo(memos[0])');
+  await until(()=>run('memoLoaded&&!memoLoading'));
+  assert.equal($('#memo-title').value,'云端记录','First visit must display the synced memo without a manual refresh');
+  assert.equal(run('memoEditor.getContent()'),'第一稿');
+  assert.equal($('#memo-list').querySelectorAll('.memo-item').length,1);
+  console.log('PASS initial authenticated visit immediately displays synced list and content');
   assert.equal($('#memo-title').value,'云端记录');assert.equal($('#memo-preview'),null);
   const content=`\n<img src=x onerror=alert(1)>\n\n😀\u00a0文字${token}\n\n`;
   replaceContent(content);await tick();

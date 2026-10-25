@@ -174,6 +174,43 @@ class DesktopSettingsTests(unittest.TestCase):
         self.assertIs(self.window.notes_page, page)
         self.assertTrue(self.window.settings["features"]["notes"])
 
+    def test_cloud_feature_disable_waits_for_editor_save(self):
+        import copy
+        checks = self.window.settings_page.feature_checks
+        checks["notes"].setChecked(True); self.save()
+        page = self.window.notes_page
+        path = page.store.create("保存保护", "原文")
+        page.refresh_files(path.name); page.editor.setPlainText("待保存的编辑")
+        before = self.window.cloud_sync.snapshot()
+        incoming = copy.deepcopy(before); incoming["preferences"]["features"]["notes"] = False
+        panel = self.window.settings_page.account
+        identity = (panel.user, panel.token, panel.store.path.exists())
+        with patch.object(page.store, "save", side_effect=OSError("fixture disk failure")):
+            with self.assertRaises(ValueError): self.window.cloud_sync.apply(incoming, before)
+            self.assertFalse(page.stop())
+        self.assertIs(self.window.notes_page, page)
+        self.assertFalse(page.stopping)
+        self.assertTrue(page.dirty)
+        self.assertEqual(page.editor.toPlainText(), "待保存的编辑")
+        self.assertEqual(read_text_file(path)[0], "原文")
+        self.assertTrue(self.window.settings["features"]["notes"])
+        self.assertEqual((panel.user, panel.token, panel.store.path.exists()), identity)
+        self.window.cloud_sync.apply(incoming, before)
+        self.assertIsNone(self.window.notes_page)
+        self.assertEqual(read_text_file(path)[0], "待保存的编辑")
+
+    def test_cloud_feature_disable_waits_for_ime_composition(self):
+        import copy
+        self.window.settings_page.feature_checks["notes"].setChecked(True); self.save()
+        page = self.window.notes_page
+        path = page.store.create("输入保护", "原文"); page.refresh_files(path.name)
+        before = self.window.cloud_sync.snapshot()
+        incoming = copy.deepcopy(before); incoming["preferences"]["features"]["notes"] = False
+        with patch.object(page.editor, "composing", True):
+            with self.assertRaises(ValueError): self.window.cloud_sync.apply(incoming, before)
+        self.assertIs(self.window.notes_page, page)
+        self.assertFalse(page.stopping)
+
     def test_real_web_start_register_login_logout_and_graceful_stop(self):
         panel = self.window.settings_page.account
         with socket.socket() as listener:

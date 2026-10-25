@@ -9,6 +9,7 @@ if __name__ == "__main__" and sys.argv[1:2] == ["--web"]:
     raise SystemExit(run_web())
 
 import json
+import math
 import os
 import re
 import shutil
@@ -214,8 +215,24 @@ class DownloadTask:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DownloadTask":
+        if not isinstance(data, dict): raise ValueError("下载记录应为对象。")
+        for key in ("id", "type", "source", "output_dir"):
+            if not isinstance(data.get(key), str) or not data[key].strip():
+                raise ValueError("下载记录缺少有效的 " + key)
         allowed = {key: value for key, value in data.items() if key in cls.__dataclass_fields__}
         task = cls(**allowed)
+        if task.type not in TYPE_TEXT or task.status not in STATUS_TEXT:
+            raise ValueError("下载类型或状态有误。")
+        if not isinstance(task.options, dict): raise ValueError("下载选项应为对象。")
+        for key in ("title", "speed", "eta", "error", "created_at", "updated_at"):
+            if not isinstance(getattr(task, key), str): raise ValueError("下载记录字段有误：" + key)
+        if type(task.progress) not in (int, float) or not math.isfinite(task.progress) or not 0 <= task.progress <= 100:
+            raise ValueError("下载进度有误。")
+        for key in ("quality", "format", "filename", "language", "cookies", "cookies_from_browser", "content_kind"):
+            if key in task.options and not isinstance(task.options[key], str):
+                raise ValueError("下载选项有误：" + key)
+        if "_resolved_media" in task.options and not isinstance(task.options["_resolved_media"], dict):
+            raise ValueError("下载媒体信息有误。")
         if task.status == "running":
             task.status = "paused"
         return task
@@ -490,13 +507,16 @@ class DownloadWorker(QThread):
                     pass
 
     def _parse_progress(self, line: str) -> None:
-        yt = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%.*?(?:at\s+([^\s]+))?.*?(?:ETA\s+(.+))?$", line)
+        yt = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", line)
         if yt:
-            self.progress.emit(self.task.id, float(yt.group(1)), yt.group(2) or "—", yt.group(3) or "—")
+            speed = re.search(r"\bat\s+(\S+)", line[yt.end():])
+            eta = re.search(r"\bETA\s+(\S+)", line[yt.end():])
+            self.progress.emit(self.task.id, float(yt.group(1)), speed.group(1) if speed else "—", eta.group(1) if eta else "—")
             return
-        aria = re.search(r"\((\d+)%\).*?DL:([^\s]+).*?(?:ETA:([^\]]+))?", line)
+        aria = re.search(r"\((\d+)%\).*?DL:([^\s\]]+)", line)
         if aria:
-            self.progress.emit(self.task.id, float(aria.group(1)), aria.group(2), aria.group(3) or "—")
+            eta = re.search(r"\bETA:([^\s\]]+)", line)
+            self.progress.emit(self.task.id, float(aria.group(1)), aria.group(2), eta.group(1) if eta else "—")
 
     def _detect_cookie_requirement(self, line: str) -> None:
         if "OMINI_BROWSER_REQUIRED" in line:
@@ -523,16 +543,63 @@ class TaskManager(QObject):
     def __init__(self, settings: dict[str, Any]):
         super().__init__()
         self.settings = settings
-        self.tasks = [DownloadTask.from_dict(item) for item in load_json(TASKS_FILE, [])]
+        self.tasks = []
+        self.queue_warning = ""
+        self._queue_original = None
+        self._queue_unreadable = False
+        try:
+            raw = TASKS_FILE.read_bytes()
+        except FileNotFoundError:
+            raw = None
+        except OSError:
+            raw = None
+            self._queue_unreadable = True
+            self.queue_warning = "下载队列读取失败，原文件已保留，请重新启动后重试。"
+        if raw is not None:
+            damaged = False
+            try:
+                records = json.loads(raw.decode("utf-8-sig"))
+                if not isinstance(records, list): raise ValueError("下载队列应为列表。")
+            except (ValueError, UnicodeError):
+                records, damaged = [], True
+            seen = set()
+            for record in records:
+                try:
+                    task = DownloadTask.from_dict(record)
+                    if task.id in seen: raise ValueError("下载标识重复。")
+                except (TypeError, ValueError):
+                    damaged = True
+                    continue
+                self.tasks.append(task); seen.add(task.id)
+            if damaged:
+                self._queue_original = raw
+                self.queue_warning = "已隔离损坏的下载记录，正常任务已保留。"
+                try:
+                    self._backup_damaged_queue()
+                    self.queue_warning += "原始记录已备份至 queue-backups。"
+                except OSError: self.queue_warning += "原队列备份待重试。"
         self.workers: dict[str, DownloadWorker] = {}
         self._lock = threading.RLock()
 
+    def _backup_damaged_queue(self):
+        if self._queue_unreadable:
+            raise OSError("原下载队列读取失败，请重新启动后再保存队列；原文件保持原样。")
+        if self._queue_original is None: return
+        directory = APP_DIR / "queue-backups"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"damaged-tasks-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.json"
+        with path.open("xb") as stream:
+            stream.write(self._queue_original); stream.flush(); os.fsync(stream.fileno())
+        self._queue_original = None
+
     def save_tasks(self) -> None:
+        self._backup_damaged_queue()
         save_json(TASKS_FILE, [asdict(task) for task in self.tasks])
 
     def clear_queue(self) -> int:
         """Remove queue records, but retain media, logs and live QThread references."""
         with self._lock:
+            self._backup_damaged_queue()
             count = len(self.tasks)
             if self.tasks:
                 backup_dir = APP_DIR / "queue-backups"
@@ -772,6 +839,10 @@ class DownloadPage(QWidget):
         queue_label = QLabel("任务队列")
         queue_label.setObjectName("sectionTitle")
         root.addWidget(queue_label)
+        if self.manager.queue_warning:
+            recovery = QLabel(self.manager.queue_warning)
+            recovery.setWordWrap(True)
+            root.addWidget(recovery)
         queue_toolbar = QHBoxLayout()
         self.pause_button = QPushButton("暂停")
         self.resume_button = QPushButton("继续")
@@ -1395,9 +1466,9 @@ class MainWindow(QMainWindow):
         page = QLabel("更多工具正在规划中"); page.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return page
 
-    def prepare_features(self, features):
+    def prepare_features(self, features, warn=True):
         if self.notes_page and not features["notes"] and not self.notes_page.flush():
-            QMessageBox.warning(self, "超级备忘录尚未保存", "请先保存当前笔记，再关闭此功能。")
+            if warn: QMessageBox.warning(self, "超级备忘录尚未保存", "请先保存当前笔记，再关闭此功能。")
             return False
         return True
 
@@ -1421,7 +1492,12 @@ class MainWindow(QMainWindow):
                 if feature == "downloads":
                     for task in self.manager.tasks:
                         if task.status in {"running", "queued"}: self.manager.pause(task.id)
-                if hasattr(page, "stop"): page.stop()
+                if hasattr(page, "stop") and page.stop() is False:
+                    # A failed editor flush must leave the live page and its timers intact.
+                    features[feature] = True
+                    self.settings.setdefault("features", {})[feature] = True
+                    self.nav.item(index).setHidden(False)
+                    continue
                 self.stack.removeWidget(page)
                 loading = QLabel("功能已关闭；重新勾选后加载。")
                 loading.setAlignment(Qt.AlignmentFlag.AlignCenter)

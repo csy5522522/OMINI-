@@ -47,7 +47,77 @@ function toast(message, error = false) {
   const el = $('#toast'); el.textContent = message; el.classList.toggle('error', error); el.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
 }
-function showDialog(id) { const el = $(`#${id}`); if (!el.open) el.showModal(); }
+function showDialog(id) {
+  const el = $(`#${id}`); if (!el.open) el.showModal();
+  if(id==='settings-dialog')loadPublicAsset('/account-sync.css','style').catch(error=>toast(error.message,true));
+}
+const publicAssetLoads=new Map();
+const publicAssetsReady=new Set();
+let publicAssetVersions={};
+try{publicAssetVersions=JSON.parse($('#asset-manifest')?.textContent||'{}');}catch(_){}
+function loadPublicAsset(path,kind='script'){
+  if(publicAssetLoads.has(path))return publicAssetLoads.get(path);
+  const element=document.createElement(kind==='style'?'link':'script');
+  const url=path+(publicAssetVersions[path]?`?v=${publicAssetVersions[path]}`:'');
+  if(kind==='style'){element.rel='stylesheet';element.href=url;}else element.src=url;
+  const promise=new Promise((resolve,reject)=>{
+    element.onload=()=>{publicAssetsReady.add(path);resolve();};
+    element.onerror=()=>{publicAssetLoads.delete(path);element.remove();reject(new Error('功能资源加载失败，请重试。'));};
+  });
+  publicAssetLoads.set(path,promise);document.head.appendChild(element);return promise;
+}
+function ensureAccountSync(){
+  if(typeof loadAccountSync==='function')return Promise.resolve();
+  return loadPublicAsset('/draft-store.js').then(()=>loadPublicAsset('/account-sync.js'));
+}
+function ensureMemos(){
+  if(typeof loadMemos==='function')return Promise.resolve();
+  return Promise.all([loadPublicAsset('/memos.css','style'),loadPublicAsset('/draft-store.js'),loadPublicAsset('/memo-editor.js')])
+    .then(()=>loadPublicAsset('/memos.js'));
+}
+const featurePreparations=new Map();
+function featureLoadStatus(page,text='',retry=false){
+  const root=$(`#page-${page}`);let status=$('.feature-loading',root);
+  if(!status){status=document.createElement('div');status.className='feature-loading';status.setAttribute('role','status');root.insertBefore(status,root.children[1]||null);}
+  status.replaceChildren();status.hidden=!text;
+  if(text){const label=document.createElement('span');label.textContent=text;status.append(label);}
+  if(retry){const button=document.createElement('button');button.className='button compact';button.textContent='重新加载';button.onclick=()=>prepareFeature(page,true);status.append(button);}
+}
+async function prepareFeature(page,force=false){
+  const root=$(`#page-${page}`),isNotes=page==='notes';
+  const ready=isNotes?typeof loadMemos==='function':typeof loadAccountSync==='function'&&publicAssetsReady.has('/account-sync.css');
+  if(ready){
+    if(isNotes){if(connected)loadMemos(force);return;}
+    if(connected)loadAccountSync();return;
+  }
+  if(featurePreparations.has(page))return featurePreparations.get(page);
+  root.setAttribute('data-feature-pending','');root.setAttribute('aria-busy','true');
+  featureLoadStatus(page,'正在加载此功能…');
+  const task=(async()=>{
+    try{
+      if(isNotes)await ensureMemos();
+      else await Promise.all([ensureAccountSync(),loadPublicAsset('/account-sync.css','style')]);
+      root.removeAttribute('data-feature-pending');featureLoadStatus(page);
+      if(activePage===page&&features[page]){
+        if(isNotes){renderMemoAccess();renderMemoList();if(connected)await loadMemos(true);}
+        else if(connected)await loadAccountSync();
+      }
+    }catch(error){featureLoadStatus(page,error.message,true);}
+    finally{root.removeAttribute('aria-busy');featurePreparations.delete(page);}
+  })();
+  featurePreparations.set(page,task);return task;
+}
+async function requestAccountSync(){
+  if(!auth.user){showDialog('login-dialog');return;}
+  const generation=authGeneration;
+  try{await ensureAccountSync();if(generation===authGeneration)await loadAccountSync(true);}
+  catch(error){if(generation===authGeneration)toast(error.message,true);}
+}
+async function syncTheme(theme){
+  const generation=authGeneration;
+  try{await ensureAccountSync();if(generation===authGeneration)await saveCloudTheme(theme);}
+  catch(error){if(generation===authGeneration)toast(error.message,true);}
+}
 async function api(path, body) {
   const generation=authGeneration;
   const options = {headers:{'X-Omini-Client':'web'}, credentials:'same-origin'};
@@ -74,8 +144,7 @@ function route() {
   $('#breadcrumb-page').textContent = title;
   document.title = `${title} · Omini`;
   if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();
-  if (page === 'notes' && connected && typeof loadMemos === 'function') loadMemos(entering);
-  if (page === 'ai_assistants' && connected && typeof loadAccountSync === 'function') loadAccountSync();
+  if (page === 'notes' || page === 'ai_assistants') prepareFeature(page,entering);
 }
 function applyFeatures(selected = features) {
   for (const key of ['timetable','notes','ai_assistants']) {
@@ -93,7 +162,7 @@ function setTheme(theme, sync = false) {
   document.documentElement.dataset.theme = theme;
   $('#theme-label').textContent = theme === 'dark' ? '切换浅色模式' : '切换深色模式';
   try { localStorage.setItem('omini-theme', theme); } catch (_) {}
-  if(sync && typeof saveCloudTheme === 'function') saveCloudTheme(theme);
+  if(sync && auth.user)syncTheme(theme);
 }
 let theme = 'light';
 try { theme = localStorage.getItem('omini-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (_) {}
@@ -181,7 +250,8 @@ async function refreshState() {
   polling=true;const generation=authGeneration;
   try {const state=await api('/api/state');if(generation!==authGeneration)return;
     setConnection(true);applyFeatures(state.features);$('#version-label').textContent=state.version;
-    if(typeof loadAccountSync==='function'&&auth.user)loadAccountSync();
+    if(auth.user)ensureAccountSync().then(()=>{if(generation===authGeneration)loadAccountSync();})
+      .catch(error=>{if(generation===authGeneration)$('#settings-sync-status').textContent=error.message;});
   }catch(error){if(generation===authGeneration)setConnection(false);}finally{polling=false;}
 }
 $('#settings-open').addEventListener('click',()=>showDialog('settings-dialog'));
@@ -197,6 +267,8 @@ $('#settings-form').addEventListener('submit',async e=>{
   }catch(error){toast(error.message,true);}finally{button.disabled=false;}
 });
 $('#chatgpt-reset-open').addEventListener('click',()=>showDialog('chatgpt-reset-dialog'));
+$('#cloud-refresh').addEventListener('click',requestAccountSync);
+$('#settings-sync-now').addEventListener('click',requestAccountSync);
 
 // Timetable dates use local calendar days to avoid DST offset errors.
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
@@ -266,6 +338,7 @@ async function selectWeek(week) {
   savedSelectedWeek=week;const generation=authGeneration;
   try {
     if(auth.user){
+      await ensureAccountSync();if(generation!==authGeneration)return;
       if(!cloudReady)await loadAccountSync(true);
       if(generation!==authGeneration)return;
       await queueCloudData('schedule',{...cloudData('schedule'),schedule:savedTimetable,first_monday:firstMonday,selected_week:week});

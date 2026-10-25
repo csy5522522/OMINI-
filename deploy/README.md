@@ -14,6 +14,8 @@ docker compose -f deploy/compose.yaml logs --tail 50 web
 
 Nginx 配置模板在 `nginx.conf`。先使用 HTTP 的 ACME 路径签发 `my.omini.cn` 证书，再启用模板中的 HTTPS 服务，并通过 `nginx -t` 检查后重载。部署主机使用 Certbot webroot `/var/www/omini-acme` 自动续期，续期后重载 Nginx。
 
+网页公共资源使用内容哈希版本号与长期缓存，入口 HTML 使用 ETag / 304 校验后引用当前版本；私有 API 仍禁止缓存。保留应用返回的缓存头，避免在代理或 CDN 上把 `/api/` 纳入公共缓存规则。Nginx 模板为 HTML、CSS、JavaScript 开启 gzip。更新时重建 Web 容器；如同步更新了 Nginx 模板，还需在部署主机执行 `nginx -t` 后重载。仅推送 GitHub 源码不会更新已运行的站点。
+
 管理员用户名为 `admin`，首次初始化读取 `admin_password`；数据库已存在该账号时，重启不会覆盖后来设置的密码。后台可以查看账号、停用/启用账号和重置密码。密码变更会撤销该账号全部会话。管理员自身密码可通过「修改管理员密码」更新。
 
 备忘录每次保存追加完整快照；删除采用回收站标记。回滚创建新版本，旧历史继续保留。桌面未同步动作逐个上传，云端并发修改保留为独立冲突副本。图片最多 10 MB，支持 PNG/JPEG/GIF/WebP，每账号图片总额 200 MB；每篇正文最多 2 MB，每账号最多 2000 篇。

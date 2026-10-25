@@ -6,6 +6,10 @@
 
 顶部快捷导航提供「ChatGPT 重置」占位入口（仅展示即将上线提示）和「API 中转站」（新窗口打开 https://api.omini.cn）。
 
+网页采用按需加载：首次打开课表仅请求基础 `app.js`、`style.css`；进入备忘录时加载编辑器、备忘录控制器及样式；登录后才加载共用的账号同步与加密草稿模块，助手样式在进入助手或打开设置时加载。加载失败提供重试，加载期间导航和登录仍可操作。管理员脚本仅在管理员页面加载。
+
+公共 JS、CSS 与图标使用按内容生成的版本 URL，允许浏览器长期缓存；入口 HTML 和未带版本的资源允许存储，并使用 ETag / 304 校验。文件内容修改后，入口会自动引用新版本，动态加载也使用相同的版本表。账号会话、笔记、图片及同步 API 继续返回 `no-store`，公共静态缓存不包含账号数据。Nginx 模板启用 HTML、CSS、JavaScript 的 gzip 压缩。
+
 技术栈：原生 JavaScript / HTML / CSS，备忘录编辑器使用 ProseMirror；后端为 Python + PySide6 HTTP 服务。仓库的 Docker 部署配置使用 MySQL 8.4，本机默认使用 SQLite，通过 `OMINI_MYSQL_HOST` 选择 MySQL。当前未接入 Redis，也没有 Redis 缓存或 Redis 消息队列；同步采用本机持久化待处理记录、后台线程与定时重试。此处描述仓库配置，实际线上部署需以服务器运行配置为准。
 
 课表支持 HAR/JSON 导入、JSON 导出、学期日期和周次选择。所选周次（0 表示全学期）自动保存，浏览器刷新后恢复，并与同账号客户端双向同步。示例课表预览不保存个人周次。
@@ -25,7 +29,7 @@ python web_server.py --port 18766 --data-dir "D:\Omini-Web"
 数据默认保存在 AppData/Omini工具箱/web。生产使用 Docker + MySQL，HTTPS 由 Nginx 提供，详见 [部署说明](../deploy/README.md)。更新前备份数据库及两份加密密钥，保留持久卷。
 
 ```powershell
-python -m unittest tests.test_web_server tests.test_memos tests.test_memo_encryption tests.test_account_sync -v
+python -m unittest tests.test_web_assets tests.test_web_server tests.test_memos tests.test_memo_encryption tests.test_account_sync -v
 npm install --prefix .cache/web-test --no-audit --no-fund linkedom@0.18.13 fake-indexeddb@6.2.4
 npm ci --prefix scripts/memo-editor --no-audit --no-fund
 node tests/test_web_frontend.cjs
@@ -35,4 +39,5 @@ node tests/test_web_guest.cjs
 python -m tests.account_sync_check
 python -m tests.memo_workspace_check
 python -m tests.web_guest_check
+python -m tests.web_performance_check
 ```

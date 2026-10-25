@@ -41,7 +41,7 @@ async function beginA(){
   await run('loadAccountSync(true)');
 }
 (async()=>{
-  for(const file of ['web/app.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['web/draft-store.js','web/app.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
   await until(()=>run('cloudReady&&!cloudBusy'));
   for(const [endpoint,start] of [
     ['/api/timetable/semester',()=>submit('#semester-form')],

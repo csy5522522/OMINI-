@@ -15,7 +15,7 @@ import signal
 import tempfile
 import threading
 import time
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 import webbrowser
 
 from PySide6.QtCore import QCoreApplication, QTimer
@@ -27,9 +27,20 @@ from account_data import AccountDataStore, RESOURCES
 from database import secret
 from memo_store import MemoStore, MemoConflict
 from feature_config import WEB_FEATURES, enabled_features, validate_features
+from web_assets import StaticAssets
 
 ROOT = Path(__file__).resolve().parent
 STATIC = desktop.resource_path("web")
+PUBLIC_ASSETS = StaticAssets({
+    "/": (STATIC / "index.html", "text/html; charset=utf-8"),
+    "/admin": (STATIC / "admin.html", "text/html; charset=utf-8"),
+    "/admin/": (STATIC / "admin.html", "text/html; charset=utf-8"),
+    **{f"/{name}.js": (STATIC / f"{name}.js", "text/javascript; charset=utf-8")
+       for name in ("app", "memos", "memo-editor", "account-sync", "draft-store", "admin")},
+    **{f"/{name}.css": (STATIC / f"{name}.css", "text/css; charset=utf-8")
+       for name in ("style", "memos", "account-sync")},
+    "/favicon.ico": (desktop.resource_path("assets/omini_icon.ico"), "image/x-icon"),
+})
 MAX_BODY = 32 * 1024 * 1024
 WEB_VERSION = desktop.APP_VERSION + "-web"
 
@@ -162,10 +173,10 @@ class Handler(BaseHTTPRequestHandler):
         # Request paths and headers may contain private data.
         pass
 
-    def headers_common(self, content_type, length, cookie=None):
+    def headers_common(self, content_type, length, cookie=None, *, cache_control="no-store"):
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(length))
-        self.send_header("Cache-Control", "no-store")
+        if length is not None: self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
@@ -229,29 +240,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.feature_available(path):
                     return
                 return self.get_api(path)
-            assets = {"/": ("index.html", "text/html; charset=utf-8"),
-                      "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                      "/memos.js": ("memos.js", "text/javascript; charset=utf-8"),
-                      "/memo-editor.js": ("memo-editor.js", "text/javascript; charset=utf-8"),
-                      "/memos.css": ("memos.css", "text/css; charset=utf-8"),
-                      "/account-sync.js": ("account-sync.js", "text/javascript; charset=utf-8"),
-                      "/account-sync.css": ("account-sync.css", "text/css; charset=utf-8"),
-                      "/admin": ("admin.html", "text/html; charset=utf-8"),
-                      "/admin/": ("admin.html", "text/html; charset=utf-8"),
-                      "/admin.js": ("admin.js", "text/javascript; charset=utf-8"),
-                      "/style.css": ("style.css", "text/css; charset=utf-8")}
-            if path == "/favicon.ico":
-                file, content_type = desktop.resource_path("assets/omini_icon.ico"), "image/x-icon"
-            elif path in assets:
-                filename, content_type = assets[path]
-                file = STATIC / filename
-            else:
+            if path not in PUBLIC_ASSETS.files:
                 return self.respond(404, {"error": "页面不存在。"})
-            data = file.read_bytes()
-            self.send_response(200)
-            self.headers_common(content_type, len(data))
+            version = parse_qs(urlsplit(self.path).query).get("v", [""])[0]
+            asset = PUBLIC_ASSETS.get(path, version)
+            unchanged = asset.matches(self.headers.get("If-None-Match", ""))
+            self.send_response(304 if unchanged else 200)
+            self.headers_common(asset.content_type, None if unchanged else len(asset.data),
+                                cache_control=asset.cache_control)
+            self.send_header("ETag", asset.etag)
             self.end_headers()
-            self.wfile.write(data)
+            if not unchanged: self.wfile.write(asset.data)
         except (ValueError, KeyError, TypeError, OSError) as error:
             self.respond(400, {"error": str(error) if isinstance(error, ValueError) else "读取失败，请重试。"})
         except Exception:
@@ -261,7 +260,6 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/sync"):
             if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录同步。"})
             if path == "/api/sync":
-                from urllib.parse import parse_qs
                 supplied = parse_qs(urlsplit(self.path).query).get("revisions", ["{}"])[0]
                 known = json.loads(supplied)
                 if not isinstance(known, dict): raise ValueError("同步版本列表有误。")

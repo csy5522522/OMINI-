@@ -59,6 +59,7 @@ def main():
                 page.wait_for_timeout(2300)
                 assert api_requests == ['auth/session'], api_requests
                 page.locator('[data-page="notes"]').click()
+                page.wait_for_function('() => typeof loadMemos === "function" && !document.querySelector("#page-notes").hasAttribute("data-feature-pending")')
                 assert not page.locator('#login-dialog').is_visible()
                 assert page.locator('#memo-list').inner_text() == '登录后显示你的备忘录'
                 page.locator('#account-open').click()
@@ -108,12 +109,12 @@ def main():
                 page.locator('#account-email').fill('web-guest@example.test')
                 page.locator('#account-password').fill('FixturePassword-123')
                 page.locator('#login-form').evaluate('(form) => form.requestSubmit()')
-                page.wait_for_function('() => memoLoaded && !memoLoading && memoCurrent')
+                page.wait_for_function('() => typeof memoLoaded !== "undefined" && memoLoaded && !memoLoading && memoCurrent')
                 assert page.locator('#memo-title').input_value() == '客户端已同步的备忘录'
                 assert page.evaluate('memoEditor.getContent()') == store.for_path(note)['content']
                 assert not page.locator('#login-dialog').is_visible()
                 page.reload()
-                page.wait_for_function('() => memoLoaded && !memoLoading && memoCurrent')
+                page.wait_for_function('() => typeof memoLoaded !== "undefined" && memoLoaded && !memoLoading && memoCurrent')
                 assert page.evaluate('memoEditor.getContent()') == store.for_path(note)['content']
                 assert not page.locator('#login-dialog').is_visible()
                 report['checks'].append('Desktop-synced memo title and body appear immediately after login and authenticated reload')

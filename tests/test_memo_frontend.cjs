@@ -38,7 +38,7 @@ const context=dom.getInternalVMContext(),run=code=>vm.runInContext(code,context)
 async function until(test){for(let i=0;i<200&&!test();i++)await tick();assert.ok(test());}
 function replaceContent(text){run(`memoEditor.loadContent(${JSON.stringify(text)});editedMemo()`);}
 (async()=>{
-  for(const file of ['web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['web/draft-store.js','web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
   await until(()=>run('memoLoaded&&!memoLoading'));
   assert.equal($('#memo-title').value,'云端记录','First visit must display the synced memo without a manual refresh');
   assert.equal(run('memoEditor.getContent()'),'第一稿');

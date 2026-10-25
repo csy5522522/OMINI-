@@ -35,7 +35,7 @@ const tick=async()=>{for(let i=0;i<10;i++)await new Promise(setImmediate);};
 async function until(test){for(let i=0;i<250&&!test();i++)await tick();assert.ok(test());}
 function submit(id){$(id).dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));}
 (async()=>{
-  for(const file of ['web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['web/draft-store.js','web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
   await until(()=>run('connected'));
   assert.ok(!$('#login-dialog').open);
   assert.deepEqual(requests.map(r=>r.url),['/api/auth/session']);

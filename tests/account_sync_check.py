@@ -203,7 +203,7 @@ def main():
                 page.locator("#account-open").click()
                 page.locator("#account-email").fill(user["email"]); page.locator("#account-password").fill("FixturePass-123")
                 page.locator("#auth-submit").click()
-                page.wait_for_function("() => cloudReady && !cloudBusy")
+                page.wait_for_function("() => typeof cloudReady !== 'undefined' && cloudReady && !cloudBusy")
                 page.locator("[data-member]").first.wait_for()
                 assert page.locator("[data-member]").count() == 1
                 native_a.send("week", {"value": 7}); native_a.send("sync")
@@ -212,7 +212,7 @@ def main():
                 page.evaluate("() => loadAccountSync(true)")
                 page.evaluate("() => {location.hash='#timetable';route()}")
                 page.wait_for_function("() => selectedWeek===7 && !cloudBusy")
-                page.reload(); page.wait_for_function("() => selectedWeek===7 && cloudReady && !cloudBusy")
+                page.reload(); page.wait_for_function("() => selectedWeek===7 && typeof cloudReady !== 'undefined' && cloudReady && !cloudBusy")
                 page.locator("#week-select").select_option("0")
                 page.wait_for_function("() => !cloudBusy && !cloudPending.schedule && selectedWeek===0")
                 value = native_a.send("sync")

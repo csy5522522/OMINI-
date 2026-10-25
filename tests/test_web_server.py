@@ -133,6 +133,38 @@ class WebServerTests(unittest.TestCase):
         self.assertNotIn('id="page-downloads"', self.get("/").text)
         self.assertFalse((self.data / "tasks.json").exists())
 
+    def test_03_public_assets_cache_without_caching_private_data(self):
+        page = self.get("/")
+        self.assertIn("must-revalidate", page.headers["Cache-Control"])
+        self.assertNotIn("no-store", page.headers["Cache-Control"])
+        manifest = json.loads(re.search(r'<script id="asset-manifest" type="application/json">(.*?)</script>', page.text).group(1))
+        self.assertIn('/draft-store.js', manifest)
+        self.assertIn('/memo-editor.js', manifest)
+        self.assertIn(f'/app.js?v={manifest["/app.js"]}', page.text)
+        self.assertNotIn('<script src="/memo-editor.js', page.text)
+        self.assertNotIn('<link rel="stylesheet" href="/memos.css', page.text)
+        response = self.get("/", headers={"If-None-Match": page.headers["ETag"]})
+        self.assertEqual(response.status_code, 304)
+        self.assertEqual(response.content, b'')
+        for path in ('/app.js', '/style.css', '/draft-store.js', '/memo-editor.js'):
+            with self.subTest(path=path):
+                asset = self.get(path + '?v=' + manifest[path])
+                self.assertEqual(asset.status_code, 200)
+                self.assertIn('max-age=31536000', asset.headers['Cache-Control'])
+                self.assertIn('immutable', asset.headers['Cache-Control'])
+                self.assertNotIn('Set-Cookie', asset.headers)
+                cached = self.get(path, headers={'If-None-Match': asset.headers['ETag']})
+                self.assertEqual(cached.status_code, 304)
+                self.assertEqual(cached.content, b'')
+                stale = self.get(path + '?v=old-version')
+                self.assertIn('must-revalidate', stale.headers['Cache-Control'])
+                self.assertNotIn('immutable', stale.headers['Cache-Control'])
+        for path in ('/api/state', '/api/auth/session'):
+            response = self.get(path, headers={'If-None-Match': '*'})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            self.assertNotIn('ETag', response.headers)
+
     def test_04_import_har_and_cache_privacy(self):
         payload = {"xsxx": {"XH": "PRIVATE_STUDENT", "XM": "PRIVATE_STUDENT_NAME"}, "kbList": [
             {"kcmc": "数据结构 <script>", "xm": "示例教师", "cdmc": "A201", "xqj": "1", "jcs": "1-2,5", "zcd": "1-16周(单)", "xqh_id": "1"}]}

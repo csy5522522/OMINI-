@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import requests
 
 from assistant_data import read_protected, write_protected
+from api_members import api_providers, validate_api_members
 from codex_quota import USAGE_URL, parse_codex_quota
 
 
@@ -68,7 +69,7 @@ def default_settings() -> dict:
         },
         "pool": {"port": 8317, "proxy": "http://127.0.0.1:7890",
                  "strategy": "round-robin", "session_affinity": True,
-                 "member_rules": {},
+                 "member_rules": {}, "api_members": {},
                  "background": True, "resume_on_launch": True,
                  "api_key": "omini-" + secrets.token_urlsafe(32),
                  "management_key": secrets.token_urlsafe(40), "model": ""},
@@ -88,10 +89,12 @@ class AssistantStore:
             saved, self.error = read_protected(self.path, {},
                 lambda value: isinstance(value.get("profiles", {}), dict)
                 and isinstance(value.get("pool", {}), dict)
-                and all(isinstance(item, dict) for item in value.get("profiles", {}).values()))
+                and all(isinstance(item, dict) for item in value.get("profiles", {}).values())
+                and isinstance(validate_api_members(value.get("pool", {}).get("api_members", {})), dict))
             for name in ASSISTANTS:
                 self.data["profiles"][name].update(saved.get("profiles", {}).get(name, {}))
             self.data["pool"].update(saved.get("pool", {}))
+            self.data["pool"]["api_members"] = validate_api_members(self.data["pool"].get("api_members", {}))
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
             self.error = str(error)
             self.writable = False
@@ -413,6 +416,7 @@ def pool_config(root: Path, pool: dict) -> dict:
             "oauth": {"auth-dir": str((Path(root) / "auths").resolve())},
             "requests": {"proxy-url": validate_proxy(pool.get("proxy", ""), allow_empty=True)},
             "routing": {**routing, "session-affinity-ttl": "1h", "retry": {"request-retry": 2, "max-retry-interval": 10}},
+            "api-keys": api_providers(pool),
             "observability": {"logs": {"logging-to-file": False, "debug": False,
                                        "request-log": False, "error-logs-max-files": 1}}}
 
@@ -515,7 +519,7 @@ class PoolClient:
 
     def accounts(self) -> list[dict]:
         return [row for row in self.request("GET", "/credentials").get("files", [])
-                if row.get("provider", row.get("type")) == "codex"]
+                if row.get("provider", row.get("type")) == "codex" and not row.get("runtime_only")]
 
     def quota(self, row: dict) -> dict:
         index = row.get("auth_index")
@@ -551,8 +555,13 @@ class PoolClient:
             if any(row.get(key, 0 if key == "priority" else 1) != value for key, value in effective.items()):
                 changes.append((row, effective))
         previous = self.request("GET", "/config/routing")
+        update_providers = bool(pool.get("api_members") or self.pool.get("api_members"))
+        previous_providers = self.request("GET", "/config").get("api-keys", {}) if update_providers else None
         applied = []
         try:
+            if update_providers:
+                if cancelled(): raise ValueError("调度更新已取消。")
+                self.request("PUT", "/config/api-keys", json=api_providers(pool))
             for row, fields in changes:
                 if cancelled(): raise ValueError("调度更新已取消。")
                 # Record before sending: a timeout may occur after the server commits.
@@ -569,7 +578,11 @@ class PoolClient:
                     pass
             try: self.request("PUT", "/config/routing", json=previous)
             except ValueError: pass
+            if previous_providers is not None:
+                try: self.request("PUT", "/config/api-keys", json=previous_providers)
+                except ValueError: pass
             raise
+        self.pool = copy.deepcopy(pool)
         return self.accounts()
 
     def models(self) -> list[str]:
@@ -581,6 +594,9 @@ class PoolClient:
                 continue
             data = self.request("GET", "/credentials/models", params={"name": row["name"]})
             models.update(m.get("id") or m.get("name") for m in data.get("models", []) if m.get("id") or m.get("name"))
+        for member in self.pool.get("api_members", {}).values():
+            if not member.get("disabled"):
+                models.update(m.get("alias") or m["name"] for m in member.get("models", []))
         return sorted(models)
 
     def import_account(self, path: Path) -> None:

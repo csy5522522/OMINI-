@@ -17,6 +17,7 @@ from cryptography.fernet import Fernet
 
 from feature_config import DESKTOP_FEATURES, validate_features
 from school_timetable import validate_cache
+from api_members import validate_api_members
 
 RESOURCES = ("preferences", "schedule", "assistants")
 MISSING = object()
@@ -32,7 +33,7 @@ def merge_documents(base, incoming, current, path=()):
         return current, []
     if current == base or incoming == current:
         return incoming, []
-    atomic = path == ("schedule",) or len(path) == 2 and path[0] == "members"
+    atomic = path == ("schedule",) or len(path) == 2 and path[0] == "members" or len(path) == 3 and path[:2] == ("pool", "api_members")
     if not atomic and isinstance(incoming, dict) and isinstance(current, dict) and (isinstance(base, dict) or base is MISSING):
         result, conflicts = {}, []
         baseline = base if isinstance(base, dict) else {}
@@ -48,6 +49,7 @@ def merge_documents(base, incoming, current, path=()):
 def validate_resource(name, value):
     if name not in RESOURCES or not isinstance(value, dict):
         raise ValueError("同步数据类型有误。")
+    value = copy.deepcopy(value)
     raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
     if len(raw.encode()) > 16 * 1024 * 1024:
         raise ValueError("单项账号同步数据最多 16 MB。")
@@ -95,7 +97,7 @@ def validate_resource(name, value):
             if "desktop" in profile and type(profile["desktop"]) is not bool:
                 raise ValueError("客户端类型有误。")
         pool = value.get("pool", {})
-        if set(pool) - {"strategy", "session_affinity", "member_rules", "model"}:
+        if set(pool) - {"strategy", "session_affinity", "member_rules", "model", "api_members"}:
             raise ValueError("账号池的端口、代理和本机密钥保存在当前设备。")
         if "strategy" in pool and pool["strategy"] not in ("balanced", "round-robin", "fill-first", "weighted-round-robin"):
             raise ValueError("账号池调度策略有误。")
@@ -103,6 +105,8 @@ def validate_resource(name, value):
             raise ValueError("会话保持选项有误。")
         if not isinstance(pool.get("member_rules", {}), dict) or not isinstance(pool.get("model", ""), str):
             raise ValueError("账号池配置格式有误。")
+        if "api_members" in pool:
+            value["pool"]["api_members"] = validate_api_members(pool["api_members"])
         for rule in pool.get("member_rules", {}).values():
             if not isinstance(rule, dict) or any(type(rule.get(k, default)) is not int or not low <= rule.get(k, default) <= 1000000
                 for k, default, low in (("priority", 0, -1000000), ("weight", 1, 1))):
@@ -225,6 +229,12 @@ class AccountDataStore:
                                 if filename not in current.get("members", {}) and hashlib.sha256(filename.encode()).hexdigest() in deleted:
                                     del merged["members"][filename]
                                     paths.append("members/" + filename)
+                            current_apis = current.get("pool", {}).get("api_members", {})
+                            merged_apis = merged.get("pool", {}).get("api_members", {})
+                            for identity in list(merged_apis):
+                                if identity not in current_apis and hashlib.sha256(("pool/api_members/" + identity).encode()).hexdigest() in deleted:
+                                    del merged_apis[identity]
+                                    paths.append("pool/api_members/" + identity)
                         merged = validate_resource(name, merged)
                         conflict_id = ""
                         if paths:
@@ -244,6 +254,8 @@ class AccountDataStore:
                             db.execute("INSERT INTO account_document_versions VALUES (?, ?, ?, ?, ?)", (owner, name, number, encrypted, updated))
                             if name == "assistants":
                                 old_members, new_members = current.get("members", {}), merged.get("members", {})
+                                old_members = {**old_members, **{"pool/api_members/" + k: v for k, v in current.get("pool", {}).get("api_members", {}).items()}}
+                                new_members = {**new_members, **{"pool/api_members/" + k: v for k, v in merged.get("pool", {}).get("api_members", {}).items()}}
                                 for filename in set(old_members) ^ set(new_members):
                                     identity = hashlib.sha256(filename.encode()).hexdigest()
                                     db.execute("DELETE FROM account_member_deletions WHERE owner=? AND member_hash=?", (owner, identity))

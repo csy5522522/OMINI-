@@ -2,7 +2,7 @@
 
 Windows 桌面工具箱。包含下载中心、校园网、课表、超级备忘录、多电脑文件夹同步和 AI 编程助手。
 
-当前版本 **1.2.3**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.2.3)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
+当前版本 **1.2.4**。[下载 Windows 安装包](https://github.com/csy5522522/OMINI-/releases/tag/v1.2.4)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
 ## 统一账号与超级备忘录
 
@@ -63,6 +63,10 @@ py -3.11 app.py
 
 「Codex 成员账号池」使用 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) `v8.0.35`：
 
+「成员账号 / API 池」支持 API Key 线路，与 Codex 登录成员混合管理。点击「添加 API / Key」，填写线路名称、基础地址、Key 和模型 ID；可选 OpenAI Chat / 兼容接口、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、Gemini Interactions、Vertex API Key、xAI Responses、Meta Responses 共 8 种协议。每行一个模型 ID，`上游ID => 对外ID` 可设置模型别名；多条可用线路使用相同对外 ID 时可共同参与调度。单线路代理留空继承账号池，填写 `direct` 表示直连，也支持自定义代理和附加 JSON 请求头。
+
+API 线路在停服时也可添加、编辑、启停或移出；服务运行时保存会自动应用，也可点击「保存并应用调度」重试。「读取模型 / 检查线路」或「检查所选线路」直接连接所选上游读取模型列表，显示鉴权、HTTP 状态和耗时；上游未开放模型列表时可手填 ID。「验证模型（少量用量）」使用第一行上游模型 ID 发起一次小请求，消耗少量用量。检查结果按线路配置缓存，修改配置后重新检查；API 的余额与额度在上游控制台查看。Key 和附加请求头随助手配置加密保存，并通过账号工作区加密同步；网页提供相同线路的增删改、启停与调度设置，线路检查在桌面执行。
+
 1. 完整构建已带引擎；源码运行可点「安装代理引擎」，或运行 `py -3.11 scripts/fetch_cliproxyapi.py`。下载固定官方 Windows 版本并验证 SHA-256，许可与来源随引擎保留。
 2. 设置本地端口和出口代理，点击「保存并启动服务」。默认只在 `127.0.0.1:8317` 提供带随机密钥的本地接口。
 3. 逐个「登录并添加成员」，在浏览器切换到相应账号并完成登录；或导入 Codex `auth.json` / CLIProxyAPI 的 Codex OAuth JSON。重复导入同一账号更新凭据。
@@ -81,15 +85,17 @@ py -3.11 app.py
 
 验证：`py -3.11 -m unittest tests.test_ai_assistants tests.test_codex_quota tests.test_pool_scheduling tests.test_assistant_persistence -v`，覆盖真实引擎导入、启停、轮询、会话保持、OAuth 链接与取消、参数传递、重启恢复和记录保存。源码与 EXE 都支持 `--self-test-ai-assistants`，使用临时目录检查完整侧栏、后台运行、主题、退出清理与重启恢复。
 
+API 线路验证：`py -3.11 -m unittest tests.test_api_members tests.test_account_sync -v`，`node tests/test_api_members_frontend.cjs`。测试使用本地模拟上游与固定引擎，不读取个人 Key，也不请求付费模型。
+
 ## 打包
 
 ### Windows 安装版
 
-本地安装包位于 `dist-installer-1.2.2/Omini工具箱-1.2.2-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.2-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
+本地安装包位于 `dist-installer-1.2.4/Omini工具箱-1.2.4-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.4-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和同步引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `dist-sync-1.2.2/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
+已有完整 `dist-sync-1.2.4/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -97,7 +103,7 @@ py -3.11 app.py
 ./build.ps1
 ```
 
-发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.2`。
+发布结果在 `dist/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.4`。
 
 1.1.6 移除内置浏览器核心与随包 FFmpeg，备忘录替换为原生离线 TXT 笔记。网页统一使用系统浏览器；安装器继续采用 LZMA2 高压缩。构建脚本自动排除 `tools/` 中残留的 FFmpeg 文件，无需手动删除旧开发工具。覆盖升级会清理旧版安装目录中的浏览器运行库和 FFmpeg，个人数据目录保留。
 

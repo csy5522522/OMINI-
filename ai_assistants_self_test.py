@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 from ai_assistants import PoolClient, atomic_json
 from codex_quota import parse_codex_quota
-from ai_assistants_page import AiAssistantsPage
+from ai_assistants_page import AiAssistantsPage, ApiMemberDialog
 from assistant_data import AssistantState
 
 from PySide6.QtTest import QTest
@@ -66,7 +66,7 @@ def run_ai_assistants_test(app_module) -> int:
                         "last_refresh":"2099-01-01T00:00:00Z"})
                     client.import_account(credential)
                 page.set_accounts(client.accounts()); page.table.selectRow(0)
-                assert page.table.columnCount() == 7 and page.strategy.count() == 4
+                assert page.table.columnCount() == 10 and page.strategy.count() == 4
                 def fixture_quota(row):
                     index = next(i for i, item in enumerate(page.accounts) if item['name'] == row['name'])
                     return parse_codex_quota({"plan_type":"plus", "rate_limit": {
@@ -85,6 +85,17 @@ def run_ai_assistants_test(app_module) -> int:
                 assert page.worker is None
                 routing = client.request('GET', '/config/routing')
                 assert routing['strategy'] == 'round-robin' and not routing['session-affinity']
+                api_member = {"label": "API 验证线路", "protocol": "openai", "base_url": "http://127.0.0.1:1/v1",
+                    "api_key": "fixture-self-test-key", "proxy": "direct", "headers": {},
+                    "models": [{"name": "upstream-fixture", "alias": "api-self-test-model"}], "disabled": False}
+                assert page.save_api_member("api-self-test", api_member)
+                deadline = time.monotonic() + 10
+                while page.worker and time.monotonic() < deadline: QTest.qWait(20)
+                assert page.worker is None and page.table.rowCount() == 4
+                page.table.selectRow(3)
+                assert page.edit_api_button.isEnabled() and page.check_api_button.isEnabled()
+                assert not page.quota_button.isEnabled()
+                assert any(m['id'] == 'api-self-test-model' for m in client.request('GET', '/models', management=False)['data'])
                 runtime = Path(page.runtime.name)
                 assert page.login_button.isEnabled()
                 with patch.object(app_module.QSystemTrayIcon, "isSystemTrayAvailable", return_value=True), \
@@ -113,6 +124,10 @@ def run_ai_assistants_test(app_module) -> int:
                     window.resize(980, 680)
                     QTest.qWait(100)
                     assert window.grab().save(str(capture_path / "ai-assistants-compact.png"))
+                    dialog = ApiMemberDialog(page, api_member)
+                    dialog.show(); QTest.qWait(100)
+                    assert dialog.grab().save(str(capture_path / "ai-assistants-api-dialog.png"))
+                    dialog.close(); dialog.deleteLater()
                 page.model.setCurrentText("fixture-persisted-model")
                 page.stop()  # Full app exit preserves the user's last running intent.
                 assert not page.is_running
@@ -122,7 +137,9 @@ def run_ai_assistants_test(app_module) -> int:
                 assert AssistantState(page.root).data["service_wanted"]
                 restarted = AiAssistantsPage(page.root)
                 try:
-                    assert restarted.table.rowCount() == 3 and not restarted.is_running
+                    assert restarted.table.rowCount() == 4 and not restarted.is_running
+                    assert restarted.accounts[3]["api_member"]
+                    assert restarted.store.data["pool"]["api_members"]["api-self-test"]["api_key"] == "fixture-self-test-key"
                     assert all("上次" in restarted.table.item(i, 2).text() for i in range(3))
                     assert restarted.model.currentText() == "fixture-persisted-model"
                     assert restarted.strategy.currentData() == "balanced"
@@ -133,7 +150,7 @@ def run_ai_assistants_test(app_module) -> int:
                     assert restarted.ready, restarted.log.toPlainText()
                     restarted.stop_pool()
                     assert not AssistantState(page.root).data["service_wanted"]
-                    assert restarted.table.rowCount() == 3
+                    assert restarted.table.rowCount() == 4
                 finally:
                     restarted.stop()
                     if restarted.worker: restarted.worker.wait(15000)
@@ -141,7 +158,7 @@ def run_ai_assistants_test(app_module) -> int:
                 stopped = AiAssistantsPage(page.root)
                 try:
                     QTest.qWait(700)
-                    assert not stopped.is_running and stopped.table.rowCount() == 3
+                    assert not stopped.is_running and stopped.table.rowCount() == 4
                     assert "手动停止" in stopped.history_view.toPlainText()
                     if capture:
                         stopped.resize(1060, 760)
@@ -158,6 +175,7 @@ def run_ai_assistants_test(app_module) -> int:
                           "independent_proxy_profiles": True, "gateway_start_stop": True,
                           "background_page_switch": True, "tray_background": True, "runtime_cleanup": True,
                           "quota_columns_and_batch_query": True, "live_balanced_scheduling": True,
+                          "mixed_api_oauth_members": True, "api_model_registration": True, "api_restart_restore": True,
                           "offline_members_after_restart": True, "persistent_quotas_and_history": True,
                           "resume_running_service": True, "manual_stop_preserved": True}
             finally:

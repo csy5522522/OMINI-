@@ -43,18 +43,20 @@ git clone https://github.com/csy5522522/OMINI-.git
 
 ```powershell
 git add -A
-git commit -m "Release 1.2.3: preserve account workspaces and merge local memos"
-git tag -a v1.2.3 -m "Omini工具箱 1.2.3"
-git push --atomic origin main v1.2.3
+git commit -m "Release 1.2.4: mix API lines with assistant member accounts"
+git tag -a v1.2.4 -m "Omini工具箱 1.2.4"
+git push --atomic origin main v1.2.4
 py -3.11 scripts/publish_release.py --publish
 ```
 
 发布脚本从 Git Credential Manager 读取本机已有的 GitHub 凭据，仅在内存中用于请求。它核对工作区、源码提交、远端标签、安装包校验和，再创建草稿、上传安装包与校验文件，最后发布为最新正式版本。已有公开版本与内容不同的同名附件会保留，修复请使用新版本号。
 
-用户可在 GitHub Release 下载指定版本；1.1.2 及后续桌面版也可通过「设置 → 软件更新」升级。回看源码使用 `git show v1.2.3`，复现旧构建请在独立目录检出对应标签。
+用户可在 GitHub Release 下载指定版本；1.1.2 及后续桌面版也可通过「设置 → 软件更新」升级。回看源码使用 `git show v1.2.4`，复现旧构建请在独立目录检出对应标签。
 
 1.2.0 发布前增加 `tests.test_memos` 及桌面账号切换验收，验证图片归属、离线动作逐个同步、冲突副本与回滚历史。生产镜像与 MySQL 使用独立 Docker Compose 项目，确认 `https://my.omini.cn` 的 HTTPS、登录和备忘录同步后再推送版本。部署说明和秘密文件约定见 `deploy/README.md`；数据库备份、会话、SSH 凭据和验收账号数据均排除出仓库。
 
 1.2.2 发布增加 `tests.test_memo_encryption`、`tests.test_dpapi_memory`、浏览器加密草稿及双向周次同步验收；安装包检查使用 `installed_desktop_smoke`，并确认退役模块不在 PYZ 中。部署前保存私有旧数据库备份；迁移后备份数据库与两份加密密钥。旧明文备份不自动改写。
 
 1.2.3 发布增加 `tests.test_memo_import` 和凭据过期后保留工作区、重新登录续传的桌面验收。冻结程序验证本机笔记首次关联账号时自动上传；安装器验证覆盖升级与卸载保留加密登录身份及备忘录密钥。生产验收检查桌面记住登录 30 天、有效旧凭据续期，以及过期、撤销和停用仍生效。
+
+1.2.4 发布增加 `tests.test_api_members` 和 `node tests/test_api_members_frontend.cjs`。完整窗口自测覆盖 Codex 登录成员与 API Key 线路混合管理、真实引擎模型注册、配置应用和重启恢复；同步测试验证线路凭据原子合并和删除冲突。线路测试仅使用本地模拟上游，不读取个人 Key。自建同步服务须同步更新，以接收新增 API 线路字段。

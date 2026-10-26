@@ -96,8 +96,9 @@ class AssistantState:
         try:
             self.data, self.error = read_protected(self.path, {
                 "quotas": {}, "ui": {}, "models": [], "draft": {}, "service_wanted": False,
-            }, lambda value: all(isinstance(value.get(key, {}), dict) for key in ("quotas", "ui", "draft"))
+            }, lambda value: all(isinstance(value.get(key, {}), dict) for key in ("quotas", "ui", "draft", "api_checks"))
                and all(isinstance(item, dict) for item in value.get("quotas", {}).values())
+               and all(isinstance(item, dict) for item in value.get("api_checks", {}).values())
                and isinstance(value.get("models", []), list))
         except ValueError as error:
             self.data = {"quotas": {}, "ui": {}, "models": [], "draft": {}, "service_wanted": False}

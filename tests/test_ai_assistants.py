@@ -382,9 +382,10 @@ class PageTests(unittest.TestCase):
             self.page.port.setValue(listener.getsockname()[1])
         self.page.start_pool()
         deadline = time.monotonic() + 15
-        while not self.page.ready and time.monotonic() < deadline:
+        while (not self.page.ready or self.page.worker is not None) and time.monotonic() < deadline:
             QTest.qWait(25)
         self.assertTrue(self.page.ready, self.page.status.text() + self.page.log.toPlainText())
+        self.assertIsNone(self.page.worker, "Wait for the startup worker before checking enabled controls")
         runtime = Path(self.page.runtime.name)
         self.assertTrue(self.page.login_button.isEnabled())
         self.page.tabs.setCurrentIndex(0)

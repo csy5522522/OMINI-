@@ -6,6 +6,8 @@
 
 顶部快捷导航提供「ChatGPT 重置」占位入口（仅展示即将上线提示）和「API 中转站」（新窗口打开 https://api.omini.cn）。
 
+「AI 编程助手 → 成员账号 / API 池」可混合管理 Codex 登录成员和 API Key 线路。「添加 API / Key」支持 OpenAI Chat、Responses、Anthropic、Gemini、Interactions、Vertex API Key、xAI 和 Meta。每行填写一个模型 ID，`上游ID => 对外ID` 设置别名；可配置出口代理、附加请求头、启停和优先级 / 权重。Key 随账号数据加密保存及同步，关闭表单或退出账号时清空输入框。线路检查和模型验证在桌面客户端执行，网页修改同步后在客户端应用调度。
+
 网页采用按需加载：首次打开课表仅请求基础 `app.js`、`style.css`；进入备忘录时加载编辑器、备忘录控制器及样式；登录后才加载共用的账号同步与加密草稿模块，助手样式在进入助手或打开设置时加载。加载失败提供重试，加载期间导航和登录仍可操作。管理员脚本仅在管理员页面加载。
 
 公共 JS、CSS 与图标使用按内容生成的版本 URL，允许浏览器长期缓存；入口 HTML 和未带版本的资源允许存储，并使用 ETag / 304 校验。文件内容修改后，入口会自动引用新版本，动态加载也使用相同的版本表。账号会话、笔记、图片及同步 API 继续返回 `no-store`，公共静态缓存不包含账号数据。Nginx 模板启用 HTML、CSS、JavaScript 的 gzip 压缩。
@@ -35,6 +37,7 @@ npm ci --prefix scripts/memo-editor --no-audit --no-fund
 node tests/test_web_frontend.cjs
 node tests/test_memo_frontend.cjs
 node tests/test_sync_races.cjs
+node tests/test_api_members_frontend.cjs
 node tests/test_web_guest.cjs
 python -m tests.account_sync_check
 python -m tests.memo_workspace_check

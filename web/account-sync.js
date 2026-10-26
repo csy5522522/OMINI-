@@ -10,7 +10,7 @@ const cloudClone = value => JSON.parse(JSON.stringify(value));
 function rebaseCloudData(base, latest, result, path=[]) {
   if(JSON.stringify(base)===JSON.stringify(latest))return result;
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
-  const atomic=path.length===1&&path[0]==='schedule'||path.length===2&&path[0]==='members';
+  const atomic=path.length===1&&path[0]==='schedule'||path.length===2&&path[0]==='members'||path.length===3&&path[0]==='pool'&&path[1]==='api_members';
   if(!atomic&&object(latest)&&object(result)&&(base===undefined||object(base))){
     const rebased={};
     for(const key of new Set([...Object.keys(base||{}),...Object.keys(latest),...Object.keys(result)])){
@@ -37,6 +37,7 @@ function resetAccountSync() {
   cloudMemberSignature='';cloudConflicts=[];
   $('#cloud-members').textContent='';$('#cloud-profiles').textContent='';$('#cloud-history').textContent='';$('#cloud-conflicts').textContent='';
   $('#cloud-model').value='';$('#cloud-import').value='';
+  $('#cloud-api-dialog').close();clearCloudApiForm();
   cloudStatus('登录邮箱账号后自动同步。');
 }
 function cloudData(name) { return cloudClone(cloudPending[name]?.data||cloudResources[name]?.data||{}); }
@@ -94,7 +95,7 @@ async function loadAccountSync(force=false) {
       if(JSON.stringify(schedule.schedule)!==JSON.stringify(savedTimetable)||schedule.first_monday!==firstMonday||schedule.selected_week!==selectedWeek)acceptTimetable({...schedule,revision:cloudResources.schedule.revision});
     }
     renderCloudWorkspace();
-    cloudStatus(Object.keys(cloudPending).length?'本机新编辑已加密保存，正在继续同步…':`已同步 · ${new Date().toLocaleTimeString()} · ${Object.keys(cloudData('assistants').members||{}).length} 个 Codex 成员${cloudConflicts.length?' · 有并发修改备份':''}`);
+    cloudStatus(Object.keys(cloudPending).length?'本机新编辑已加密保存，正在继续同步…':`已同步 · ${new Date().toLocaleTimeString()} · ${Object.keys(cloudData('assistants').members||{}).length} 个登录成员 · ${Object.keys(cloudData('assistants').pool?.api_members||{}).length} 条 API 线路${cloudConflicts.length?' · 有并发修改备份':''}`);
     completed=true;
     loadAccountSync.last=Date.now();
   }catch(error){if(valid())cloudStatus(`同步待重试 · ${error.message}；当前修改已保留。`,true);}
@@ -102,14 +103,15 @@ async function loadAccountSync(force=false) {
 }
 function renderCloudWorkspace() {
   const data=cloudData('assistants'),members=data.members||{},pool=data.pool||{};
-  const signature=JSON.stringify({members,quotas:data.quotas,rules:pool.member_rules});
+  const signature=JSON.stringify({members,api_members:pool.api_members,quotas:data.quotas,rules:pool.member_rules});
   if(signature!==cloudMemberSignature){
     cloudMemberSignature=signature;
-    $('#cloud-members').innerHTML=Object.entries(members).map(([name,m])=>{
+    $('#cloud-members').innerHTML=[...Object.entries(members),...Object.entries(pool.api_members||{})].map(([name,m])=>{
+      const isApi=Object.hasOwn(pool.api_members||{},name);
       const rule=pool.member_rules?.[name]||{},quota=data.quotas?.[name];
       const remaining=key=>Number.isFinite(quota?.[key]?.remaining_percent)?`${quota[key].remaining_percent.toFixed(0)}%`:'待查询';
-      const quotaText=quota?`额度快照 · 5 小时 ${remaining('five_hour')} · 每周 ${remaining('weekly')}`:'等待客户端查询额度';
-      return `<div class="cloud-member" data-member="${esc(name)}"><span class="avatar">C</span><div class="cloud-member-info"><strong>${esc(m.email||m.label||name)}</strong><small>${m.disabled?'已停用':'已启用'} · ${esc(quotaText)}</small></div><label>优先级<input type="number" data-rule="priority" min="-1000000" max="1000000" value="${Number(rule.priority??m.priority??0)}"></label><label>权重<input type="number" data-rule="weight" min="1" max="1000000" value="${Number(rule.weight??m.weight??1)}"></label><button class="button compact" data-member-toggle>${m.disabled?'启用':'停用'}</button><button class="button compact" data-member-delete>移出</button></div>`;
+      const quotaText=isApi?`${cloudApiProtocols[m.protocol]?.[0]||m.protocol} · ${m.base_url} · ${(m.models||[]).map(x=>x.alias||x.name).join(', ')}`:quota?`额度快照 · 5 小时 ${remaining('five_hour')} · 每周 ${remaining('weekly')}`:'等待客户端查询额度';
+      return `<div class="cloud-member" data-member="${esc(name)}"><span class="avatar">${isApi?'A':'C'}</span><div class="cloud-member-info"><strong>${esc(m.email||m.label||name)}</strong><small>${m.disabled?'已停用':'已启用'} · ${esc(quotaText)}</small></div><label>优先级<input type="number" data-rule="priority" min="-1000000" max="1000000" value="${Number(rule.priority??m.priority??0)}"></label><label>权重<input type="number" data-rule="weight" min="1" max="1000000" value="${Number(rule.weight??m.weight??1)}"></label>${isApi?'<button class="button compact" data-api-edit>编辑</button>':''}<button class="button compact" data-member-toggle>${m.disabled?'启用':'停用'}</button><button class="button compact" data-member-delete>移出</button></div>`;
     }).join('')||'<p class="muted">还没有成员。在此导入凭据，或在客户端添加后同步。</p>';
   }
   if(!$('#cloud-pool-form').contains(document.activeElement)){
@@ -134,13 +136,84 @@ $('#cloud-profiles').addEventListener('submit',async event=>{
 });
 $('#cloud-members').addEventListener('click',async event=>{
   const row=event.target.closest('[data-member]');if(!row)return;
+  if(event.target.closest('[data-api-edit]')){openCloudApiForm(row.dataset.member);return;}
   const toggle=event.target.closest('[data-member-toggle]'),remove=event.target.closest('[data-member-delete]');
   if(!toggle&&!remove)return;
-  const data=cloudData('assistants'),name=row.dataset.member;if(!data.members?.[name])return;
-  if(remove&&!confirm('从此账号的所有设备移出这个 Codex 成员？已有同步版本与冲突备份会保留。'))return;
-  if(remove){delete data.members[name];if(data.pool?.member_rules)delete data.pool.member_rules[name];if(data.quotas)delete data.quotas[name];}
-  else data.members[name].disabled=!data.members[name].disabled;
+  const data=cloudData('assistants'),name=row.dataset.member,collection=Object.hasOwn(data.pool?.api_members||{},name)?data.pool.api_members:data.members;if(!collection?.[name])return;
+  if(remove&&!confirm('从此账号的所有设备移出这个成员或 API 线路？已有同步版本与冲突备份会保留。'))return;
+  if(remove){delete collection[name];if(data.pool?.member_rules)delete data.pool.member_rules[name];if(data.quotas)delete data.quotas[name];}
+  else collection[name].disabled=!collection[name].disabled;
   try{await queueCloudData('assistants',data);}catch(error){cloudStatus(error.message,true);}
+});
+const cloudApiProtocols={
+  openai:['OpenAI Chat','https://api.openai.com/v1'],responses:['OpenAI Responses','https://api.openai.com/v1'],
+  anthropic:['Anthropic Messages','https://api.anthropic.com'],gemini:['Gemini','https://generativelanguage.googleapis.com'],
+  interactions:['Gemini Interactions','https://generativelanguage.googleapis.com'],vertex:['Vertex AI','https://aiplatform.googleapis.com'],
+  xai:['xAI Responses','https://api.x.ai/v1'],meta:['Meta Responses','https://api.meta.ai/v1']
+};
+let cloudApiEditing='';
+function clearCloudApiForm(){
+  cloudApiEditing='';
+  for(const id of ['label','url','key','models','proxy','headers'])$('#cloud-api-'+id).value='';
+  $('#cloud-api-disabled').checked=false;$('#cloud-api-error').textContent='';
+}
+function openCloudApiForm(name=''){
+  if(!auth.user||!cloudReady){cloudStatus('请先登录并完成首次同步。',true);return;}
+  clearCloudApiForm();cloudApiEditing=name;
+  const member=cloudData('assistants').pool?.api_members?.[name]||{};
+  $('#cloud-api-title').textContent=name?'编辑 API 线路':'添加 API 线路';
+  $('#cloud-api-label').value=member.label||'';$('#cloud-api-protocol').value=member.protocol||'openai';
+  $('#cloud-api-url').value=member.base_url||cloudApiProtocols[$('#cloud-api-protocol').value][1];
+  $('#cloud-api-key').value=member.api_key||'';$('#cloud-api-proxy').value=member.proxy||'';
+  $('#cloud-api-models').value=(member.models||[]).map(m=>m.alias&&m.alias!==m.name?`${m.name} => ${m.alias}`:m.name).join('\n');
+  $('#cloud-api-headers').value=JSON.stringify(member.headers||{},null,2);
+  $('#cloud-api-disabled').checked=Boolean(member.disabled);$('#cloud-api-dialog').showModal();
+}
+function validateCloudApiMember(member){
+  const invalid=message=>{throw new Error(message);};
+  if(!member.label||member.label.length>120||/[\x00-\x1f]/.test(member.label)||!member.api_key||member.api_key.length>8192||/[^\x21-\x7e]/.test(member.api_key))invalid('请填写线路名称与有效 API Key，Key 请只填密钥文本。');
+  if(!Object.hasOwn(cloudApiProtocols,member.protocol))invalid('请选择 API 协议。');
+  let url;
+  try{url=new URL(member.base_url);}catch(_){invalid('请填写完整 HTTP/HTTPS API 基础地址。');}
+  if(!['http:','https:'].includes(url.protocol)||!url.hostname||url.username||url.password||url.search||url.hash||member.base_url.length>2048||/[\s\x00-\x1f]/.test(member.base_url))invalid('API 基础地址请使用 HTTP/HTTPS，Key 单独填写。');
+  const aliases=new Set();
+  for(const model of member.models){
+    if([model.name,model.alias].some(id=>!id||id.length>256||/[\s\x00-\x1f]/.test(id)))invalid('模型 ID 与别名请填写不含空格的文本。');
+    if(aliases.has(model.alias))invalid('同一线路的模型别名请保持唯一。');
+    aliases.add(model.alias);
+  }
+  if(member.proxy&&member.proxy!=='direct'){
+    let proxy;
+    try{proxy=new URL(member.proxy);}catch(_){invalid('代理请填完整地址、direct，或留空继承账号池。');}
+    const authority=member.proxy.split('://')[1].split('/')[0],port=Number(authority.match(/:(\d+)$/)?.[1]);
+    if(!['http:','https:','socks5:','socks5h:'].includes(proxy.protocol)||!proxy.hostname||!port||port>65535||proxy.pathname&&proxy.pathname!=='/'||proxy.search||proxy.hash||member.proxy.length>2048||/[\s\x00-\x1f]/.test(member.proxy))invalid('代理请填完整地址（含端口）、direct，或留空继承账号池。');
+  }
+  if(!member.headers||typeof member.headers!=='object'||Array.isArray(member.headers)||Object.keys(member.headers).length>30)invalid('附加请求头请填写 JSON 对象。');
+  for(const [key,value] of Object.entries(member.headers)){
+    if(!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}$/.test(key)||['host','content-length','transfer-encoding','connection'].includes(key.toLowerCase())||typeof value!=='string'||value.length>8192||/[\x00-\x1f\u0100-\uffff]/.test(value))invalid('附加请求头名称或内容有误。');
+  }
+}
+$('#cloud-add-api').addEventListener('click',()=>openCloudApiForm());
+$('#cloud-api-dialog').addEventListener('close',clearCloudApiForm);
+$('#cloud-api-protocol').addEventListener('change',()=>{
+  if(!$('#cloud-api-url').value||Object.values(cloudApiProtocols).some(s=>s[1]===$('#cloud-api-url').value))$('#cloud-api-url').value=cloudApiProtocols[$('#cloud-api-protocol').value][1];
+});
+$('#cloud-api-form').addEventListener('submit',async event=>{
+  event.preventDefault();const generation=authGeneration;
+  try{
+    const models=$('#cloud-api-models').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).map(s=>{const parts=s.split(/\s*(?:=>|=)\s*/);if(parts.length>2)throw new Error('每行填写一个模型 ID 或 ID => 别名。');return {name:parts[0],alias:parts[1]||parts[0]};});
+    if(!models.length||models.length>500)throw new Error('请填写 1 至 500 个模型 ID。');
+    const member={label:$('#cloud-api-label').value.trim(),protocol:$('#cloud-api-protocol').value,
+      base_url:$('#cloud-api-url').value.trim(),api_key:$('#cloud-api-key').value.trim(),models,
+      proxy:$('#cloud-api-proxy').value.trim(),headers:JSON.parse($('#cloud-api-headers').value||'{}'),disabled:$('#cloud-api-disabled').checked};
+    validateCloudApiMember(member);
+    const data=cloudData('assistants');data.pool??={};data.pool.api_members??={};
+    const name=cloudApiEditing||'api-'+crypto.randomUUID().replaceAll('-','');
+    if(cloudApiEditing&&!data.pool.api_members[name])throw new Error('此线路已被移出，请关闭后重新添加。');
+    data.pool.api_members[name]=member;
+    await queueCloudData('assistants',data);
+    if(generation===authGeneration)$('#cloud-api-dialog').close();
+  }catch(error){if(generation===authGeneration)$('#cloud-api-error').textContent=error.message;}
 });
 $('#cloud-members').addEventListener('change',async event=>{
   const input=event.target.closest('[data-rule]'),row=event.target.closest('[data-member]');if(!input||!row)return;

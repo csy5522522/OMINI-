@@ -44,7 +44,7 @@ def read_assistants(root):
     return validate_resource("assistants", {
         "profiles": {name: {k: v for k, v in profile.items() if k not in {"program", "cwd"}}
                      for name, profile in store.data["profiles"].items()},
-        "pool": {k: v for k, v in store.data["pool"].items() if k in {"strategy", "session_affinity", "member_rules", "model"}},
+        "pool": {k: v for k, v in store.data["pool"].items() if k in {"strategy", "session_affinity", "member_rules", "model", "api_members"}},
         "members": members, "quotas": state.data.get("quotas", {}), "models": state.data.get("models", []), "history": history,
     })
 

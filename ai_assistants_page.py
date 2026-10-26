@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -28,6 +29,8 @@ from ai_assistants import (
 )
 from codex_quota import quota_cell
 from assistant_data import AssistantState, OperationHistory, backup_credentials, history_line, local_members, settings_fingerprint
+from api_members import (API_PROTOCOLS, api_member_rows, models_text, parse_models,
+                         probe_api_member, validate_api_member, validate_api_members)
 
 
 class AssistantWorker(QThread):
@@ -174,6 +177,112 @@ class AssistantProfile(QWidget):
             self.owner.report(str(error))
 
 
+class ApiMemberDialog(QDialog):
+    def __init__(self, owner, member=None):
+        super().__init__(owner)
+        self.owner = owner
+        self.value = None
+        self._probe_worker = None
+        member = member or {}
+        self.setWindowTitle("编辑 API 线路" if member else "添加 API 线路")
+        self.resize(660, 640)
+        layout = QFormLayout(self)
+        self.label = QLineEdit(member.get("label", ""))
+        self.label.setPlaceholderText("例如：主线路 / 备用线路")
+        self.protocol = QComboBox()
+        for key, spec in API_PROTOCOLS.items(): self.protocol.addItem(spec[0], key)
+        self.protocol.setCurrentIndex(max(0, self.protocol.findData(member.get("protocol", "openai"))))
+        self.base_url = QLineEdit(member.get("base_url", API_PROTOCOLS[self.protocol.currentData()][2]))
+        self.api_key = QLineEdit(member.get("api_key", ""))
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("API Key，加密保存")
+        self.proxy = QLineEdit(member.get("proxy", ""))
+        self.proxy.setPlaceholderText("留空继承账号池；direct 直连；或 http://127.0.0.1:7890")
+        self.models = QPlainTextEdit(models_text(member.get("models", [])))
+        self.models.setPlaceholderText("每行一个模型 ID；可用 上游ID => 对外模型ID 设置别名\n不同线路使用相同的对外 ID 时可共同参与分配")
+        self.models.setMinimumHeight(120)
+        self.headers = QPlainTextEdit(json.dumps(member.get("headers", {}), ensure_ascii=False, indent=2))
+        self.headers.setPlaceholderText('可选 JSON，例如 {"X-Custom-Header": "value"}')
+        self.headers.setMaximumHeight(75)
+        self.disabled = QCheckBox("停用此线路")
+        self.disabled.setChecked(member.get("disabled", False))
+        self.fields = (self.label, self.protocol, self.base_url, self.api_key, self.proxy, self.models, self.headers, self.disabled)
+        for label, field in (("线路名称", self.label), ("API 协议", self.protocol), ("API 基础地址", self.base_url),
+                             ("API Key", self.api_key), ("出口代理", self.proxy), ("模型 ID / 别名", self.models), ("附加请求头", self.headers)):
+            layout.addRow(label, field)
+        layout.addRow(self.disabled)
+        self.note = QLabel("读取模型检查鉴权和线路；验证模型会向上游发送一次小请求，消耗少量用量。验证使用第一行的上游模型 ID。")
+        self.note.setWordWrap(True)
+        self.note.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addRow(self.note)
+        actions = QHBoxLayout()
+        self.discover = QPushButton("读取模型 / 检查线路")
+        self.discover.clicked.connect(lambda: self.probe(False))
+        self.verify = QPushButton("验证模型（少量用量）")
+        self.verify.clicked.connect(lambda: self.probe(True))
+        actions.addWidget(self.discover); actions.addWidget(self.verify)
+        layout.addRow(actions)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存线路")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.accepted.connect(self.save)
+        self.buttons.rejected.connect(self.reject)
+        layout.addRow(self.buttons)
+        self.protocol.currentIndexChanged.connect(self.protocol_changed)
+
+    def protocol_changed(self):
+        if not self.base_url.text().strip() or self.base_url.text() in {s[2] for s in API_PROTOCOLS.values()}:
+            self.base_url.setText(API_PROTOCOLS[self.protocol.currentData()][2])
+
+    def member_value(self, *, require_models=True):
+        try:
+            headers = json.loads(self.headers.toPlainText().strip() or "{}")
+        except ValueError:
+            raise ValueError("附加请求头请填写 JSON 对象。") from None
+        return validate_api_member({"label": self.label.text(), "protocol": self.protocol.currentData(),
+            "base_url": self.base_url.text(), "api_key": self.api_key.text(), "proxy": self.proxy.text(),
+            "models": parse_models(self.models.toPlainText()), "headers": headers,
+            "disabled": self.disabled.isChecked()}, require_models=require_models)
+
+    def save(self):
+        try:
+            self.value = self.member_value()
+            self.accept()
+        except ValueError as error:
+            self.note.setText(str(error))
+
+    def probe(self, generate):
+        try:
+            member = self.member_value(require_models=generate)
+            proxy = validate_proxy(self.owner.pool_proxy.text(), allow_empty=True)
+        except ValueError as error:
+            self.note.setText(str(error)); return
+        def success(result):
+            self.note.setText(result["message"])
+            if result["ok"] and not generate and result["models"]:
+                existing = parse_models(self.models.toPlainText())
+                names = {m["name"] for m in existing}
+                aliases = {m["alias"] for m in existing}
+                existing.extend({"name": name, "alias": name} for name in result["models"] if name not in names and name not in aliases)
+                self.models.setPlainText(models_text(existing[:500]))
+        if self.owner.run_action(lambda _: probe_api_member(member, proxy, generate=generate), success,
+                                 lambda message: self.note.setText(message)):
+            self._probe_worker = self.owner.worker
+            self.note.setText("正在验证模型…" if generate else "正在检查线路并读取模型…")
+            self.buttons.setEnabled(False); self.discover.setEnabled(False); self.verify.setEnabled(False)
+            for field in self.fields: field.setEnabled(False)
+            self._probe_worker.finished.connect(self.probe_finished)
+
+    def probe_finished(self):
+        self._probe_worker = None
+        self.buttons.setEnabled(True); self.discover.setEnabled(True); self.verify.setEnabled(True)
+        for field in self.fields: field.setEnabled(True)
+
+    def reject(self):
+        if self._probe_worker is None:
+            super().reject()
+
+
 class AiAssistantsPage(QWidget):
     def __init__(self, root: Path, parent=None):
         super().__init__(parent)
@@ -200,6 +309,7 @@ class AiAssistantsPage(QWidget):
         self.started_at = 0.0
         self.accounts = []
         self.quotas = copy.deepcopy(self.state_store.data.get("quotas", {}))
+        self.api_checks = copy.deepcopy(self.state_store.data.get("api_checks", {}))
         for snapshot in self.quotas.values():
             snapshot["cached"] = True
         self.save_timer = QTimer(self)
@@ -222,7 +332,7 @@ class AiAssistantsPage(QWidget):
         heading = QLabel("AI 编程助手")
         heading.setObjectName("pageTitle")
         layout.addWidget(heading)
-        subtitle = QLabel("分别设置代理，一键启动 Codex、Gemini、反重力和 Claude Code；集中管理 Codex 成员账号。")
+        subtitle = QLabel("分别设置代理，一键启动 Codex、Gemini、反重力和 Claude Code；混合管理登录成员与 API Key 线路。")
         subtitle.setWordWrap(True)
         subtitle.setObjectName("muted")
         layout.addWidget(subtitle)
@@ -337,6 +447,18 @@ class AiAssistantsPage(QWidget):
             members.addWidget(button)
         members.addStretch()
         layout.addLayout(members)
+        api_tools = QHBoxLayout()
+        self.add_api_button = QPushButton("添加 API / Key")
+        self.add_api_button.clicked.connect(lambda: self.edit_api_member(False))
+        self.edit_api_button = QPushButton("编辑 API 线路")
+        self.edit_api_button.clicked.connect(lambda: self.edit_api_member(True))
+        self.check_api_button = QPushButton("检查所选线路")
+        self.check_api_button.clicked.connect(lambda: self.check_api_member(False))
+        self.verify_api_button = QPushButton("验证模型（少量用量）")
+        self.verify_api_button.clicked.connect(lambda: self.check_api_member(True))
+        for button in (self.add_api_button, self.edit_api_button, self.check_api_button, self.verify_api_button):
+            api_tools.addWidget(button)
+        api_tools.addStretch(); layout.addLayout(api_tools)
         login_row = QHBoxLayout()
         self.login_url = QLineEdit()
         self.login_url.setReadOnly(True)
@@ -357,8 +479,8 @@ class AiAssistantsPage(QWidget):
         for button in (self.quota_button, self.all_quotas_button, self.member_rule_button, self.prefer_button):
             quota_tools.addWidget(button)
         quota_tools.addStretch(); layout.addLayout(quota_tools)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["成员账号", "状态", "5 小时剩余", "周剩余", "优先级", "权重", "参与分配"])
+        self.table = QTableWidget(0, 10)
+        self.table.setHorizontalHeaderLabels(["成员账号 / API 线路", "状态", "5 小时剩余", "周剩余", "优先级", "权重", "参与分配", "API 协议", "模型 ID", "线路检查"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -389,7 +511,7 @@ class AiAssistantsPage(QWidget):
         self.pool_launch_button.clicked.connect(self.launch_pool_codex)
         models.addWidget(self.pool_launch_button)
         layout.addLayout(models)
-        self.pool_note = QLabel("本地成员与上次额度在停服时仍会显示。操作自动保存；退出时停止服务，下次打开可恢复上次运行状态。手动停止后不自动启动。")
+        self.pool_note = QLabel("登录成员与 API 线路可混合使用。相同对外模型 ID 的可用成员参与调度；API 线路保存后点击「保存并应用调度」生效。线路检查读取模型；验证模型消耗少量用量。")
         self.pool_note.setWordWrap(True)
         self.pool_note.setObjectName("muted")
         layout.addWidget(self.pool_note)
@@ -408,7 +530,7 @@ class AiAssistantsPage(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(widget)
         self.pool_scroll = scroll
-        self.tabs.addTab(scroll, "Codex 成员账号池")
+        self.tabs.addTab(scroll, "成员账号 / API 池")
         self.strategy.currentIndexChanged.connect(self.schedule_changed)
         self.schedule_changed()
 
@@ -478,7 +600,7 @@ class AiAssistantsPage(QWidget):
             self.quotas = copy.deepcopy(self.state_store.data.get("quotas", {}))
             self.set_accounts(local_members(self.root)[0], persist=False)
             self.history_view.setPlainText("\n".join(history_line(r) for r in self.history.records()))
-            self.status.setText("账号配置与 Codex 成员已同步。运行中的服务配置可通过「应用调度」生效。")
+            self.status.setText("账号配置、登录成员与 API 线路已同步。运行中的服务配置可通过「保存并应用调度」生效。")
         finally:
             self._restoring = False
         if self.ready and not self.worker: self.refresh_accounts()
@@ -512,7 +634,7 @@ class AiAssistantsPage(QWidget):
     def persist_state(self):
         data = copy.deepcopy(self.state_store.data)
         selected = self.selected_account()
-        data.update(quotas=self.quotas, service_wanted=self.service_wanted,
+        data.update(quotas=self.quotas, api_checks=self.api_checks, service_wanted=self.service_wanted,
                     settings_fingerprint=settings_fingerprint(self.store.data),
                     models=[self.model.itemText(i) for i in range(self.model.count())],
                     ui={"tab": self.tabs.currentIndex(), "member": selected.get("name", "") if selected else "",
@@ -594,8 +716,13 @@ class AiAssistantsPage(QWidget):
         <p>2. 点击「测试网络」。HTTP 401 代表已连到服务但尚未认证；403/429/5xx 会显示原始状态码。测试不消耗模型额度。</p>
         <p>3. 正常退出已有助手，点击「带此环境启动」。CLI 在单独的 PowerShell 窗口运行；桌面程序同时收到代理环境和网络启动参数。</p>
         <h3>Codex 多成员轮询</h3>
-        <p>在「Codex 成员账号池」安装引擎、设置出口代理并启动，逐个点击「登录并添加成员」，
+        <p>在「成员账号 / API 池」安装引擎、设置出口代理并启动，逐个点击「登录并添加成员」，
         或导入 Codex auth.json / CLIProxyAPI 的 Codex JSON。重复导入同一账号更新它的凭据。</p>
+        <p>点击「添加 API / Key」可加入 OpenAI Chat、Responses、Anthropic Messages、Gemini、Interactions、Vertex API Key、xAI 或 Meta 线路。
+        填写基础地址和 Key，读取模型，或每行手填一个模型 ID；使用「上游ID =&gt; 对外ID」设置别名。
+        多条线路的对外模型 ID 相同时可共同参与调度。每条线路可单独指定代理；留空继承账号池，direct 表示直连。
+        「检查所选线路」只读取模型列表并显示鉴权、HTTP 状态与耗时；「验证模型」使用第一行上游 ID 发送一次小请求，消耗少量用量。
+        API Key 线路的额度请在上游控制台查看。API 线路在停服时也可添加、编辑、启停或移出。</p>
         <p>「轮询分配」可保持同一会话；「雨露均沾」关闭会话保持，所有可用成员逐请求均分；
         「优先账号」先用高优先级成员，冷却时切换；「加权轮询」按成员权重分配。
         点击「成员优先级 / 权重」调整，或选中后「设为优先账号」。运行中点击「保存并应用调度」立即生效。
@@ -639,6 +766,8 @@ class AiAssistantsPage(QWidget):
     def report(self, text, event="action"):
         pool = self.store.data["pool"]
         secrets = [pool["api_key"], pool["management_key"]]
+        for member in pool.get("api_members", {}).values():
+            secrets.extend([member.get("api_key", ""), member.get("proxy", ""), *member.get("headers", {}).values()])
         secrets += [value.get("proxy", "") for value in self.store.data["profiles"].values()]
         text = redact(str(text), secrets)
         self.status.setText(text)
@@ -934,6 +1063,8 @@ class AiAssistantsPage(QWidget):
     def set_accounts(self, rows, *, persist=True):
         selected = self.selected_account()
         selected_name = selected.get("name") if selected else None
+        rows = [row for row in rows if not row.get("api_member")]
+        rows += api_member_rows(self.store.data["pool"])
         self.accounts = rows
         # Keep the user's preference even when non-priority modes neutralize engine priorities.
         data = copy.deepcopy(self.store.data)
@@ -946,6 +1077,10 @@ class AiAssistantsPage(QWidget):
         self.table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             status = row.get("status", "")
+            if row.get("api_member"):
+                current = self.store.data["pool"]["api_members"][row["name"]]
+                applied = self.ready and self.active_pool and self.active_pool.get("api_members", {}).get(row["name"]) == current
+                status = "已停用" if row.get("disabled") else "已应用" if applied else "已保存 · 待应用" if self.is_running else "本地已保存 · 服务未启动"
             status = {"ready": "就绪", "active": "可用", "error": "需检查", "disabled": "已停用"}.get(status, status)
             if row.get("unavailable"):
                 status = "等待恢复 / 额度冷却"
@@ -953,11 +1088,22 @@ class AiAssistantsPage(QWidget):
             snapshot = self.quotas.get(row.get("name"))
             five, five_tip = quota_cell(snapshot, "five_hour")
             weekly, weekly_tip = quota_cell(snapshot, "weekly")
+            if row.get("api_member"):
+                five = weekly = "—"
+                five_tip = weekly_tip = "API Key 线路的用量请在上游控制台查看。"
+            check = self.api_checks.get(row["name"], {}) if row.get("api_member") else {}
+            if check and check.get("fingerprint") != settings_fingerprint(self.store.data["pool"]["api_members"][row["name"]]):
+                check = {}
             values = (row.get("email") or row.get("label") or row.get("id", "—"), status, five, weekly,
-                      rule["priority"], rule["weight"], "已停用" if row.get("disabled") else "已启用")
+                      rule["priority"], rule["weight"], "已停用" if row.get("disabled") else "已启用",
+                      API_PROTOCOLS[row["protocol"]][0] if row.get("api_member") else "Codex OAuth",
+                      ", ".join(m["alias"] for m in row.get("models", [])) if row.get("api_member") else "自动读取",
+                      (("通过" if check.get("ok") else "需检查") + f" · {check.get('latency_ms', 0)} ms") if check else "未检查" if row.get("api_member") else "—")
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value)); self.table.setItem(index, col, item)
                 item.setToolTip(five_tip if col == 2 else weekly_tip if col == 3 else
+                                (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(check.get("checked_at", 0))) + "\n" + check.get("message", "")) if col == 9 and check else
+                                row.get("base_url", "") if col == 7 and row.get("api_member") else
                                 (str(value) + "\n凭据文件：" + row.get("name", "")))
             self.table.setRowHeight(index, 54)
             if row.get("name") == selected_name:
@@ -977,7 +1123,7 @@ class AiAssistantsPage(QWidget):
         try:
             client = self.client()
             selected = self.selected_account()
-            rows = list(self.accounts) if all_accounts else ([selected] if selected else [])
+            rows = [row for row in self.accounts if not row.get("api_member")] if all_accounts else ([selected] if selected and not selected.get("api_member") else [])
             if not rows:
                 self.report("请先添加成员账号，并选择要查询的成员。")
                 return
@@ -1120,6 +1266,11 @@ class AiAssistantsPage(QWidget):
     def toggle_account(self):
         row = self.selected_account()
         if row:
+            if row.get("api_member"):
+                value = copy.deepcopy(self.store.data["pool"]["api_members"][row["name"]])
+                value["disabled"] = not value.get("disabled", False)
+                self.save_api_member(row["name"], value)
+                return
             client = self.client()
             def action(_):
                 backup_credentials(self.root)
@@ -1134,8 +1285,11 @@ class AiAssistantsPage(QWidget):
         row = self.selected_account()
         if not row:
             return
-        answer = QMessageBox.question(self, "移出账号池", "移出所选成员，并删除本地账号池里的凭据副本？")
+        answer = QMessageBox.question(self, "移出账号池", "移出所选 API 线路？" if row.get("api_member") else "移出所选成员，并删除本地账号池里的凭据副本？")
         if answer != QMessageBox.StandardButton.Yes:
+            return
+        if row.get("api_member"):
+            self.remove_api_member(row["name"])
             return
         client = self.client()
         def action(_):
@@ -1146,6 +1300,62 @@ class AiAssistantsPage(QWidget):
             self.set_accounts(rows)
             self.report("已移出成员：" + str(row.get("email") or row["name"]) + "；移出前已保存加密备份。", "member.remove")
         self.run_action(action, success)
+
+    def edit_api_member(self, editing=False):
+        row = self.selected_account() if editing else None
+        if editing and (not row or not row.get("api_member")): return
+        member = self.store.data["pool"].get("api_members", {}).get(row["name"]) if row else None
+        dialog = ApiMemberDialog(self, member)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self.save_api_member(row["name"] if row else "api-" + uuid.uuid4().hex, dialog.value)
+        finally:
+            dialog.deleteLater()
+
+    def save_api_member(self, name, value):
+        try:
+            value = validate_api_member(value)
+            data = copy.deepcopy(self.store.data)
+            data["pool"].setdefault("api_members", {})[name] = value
+            validate_api_members(data["pool"]["api_members"])
+            self.store.save(data)
+            self.api_checks.pop(name, None)
+            self.set_accounts(self.accounts)
+            self.report("已保存 API 线路：" + value["label"] + "。", "member.api.save")
+            if self.ready:
+                self.apply_schedule()
+            return True
+        except (ValueError, OSError, RuntimeError) as error:
+            self.report(str(error)); return False
+
+    def remove_api_member(self, name):
+        try:
+            data = copy.deepcopy(self.store.data)
+            member = data["pool"]["api_members"].pop(name)
+            data["pool"].get("member_rules", {}).pop(name, None)
+            self.store.save(data)
+            self.api_checks.pop(name, None)
+            self.set_accounts(self.accounts)
+            self.report("已移出 API 线路：" + member["label"] + "。", "member.api.remove")
+            if self.ready: self.apply_schedule()
+        except (KeyError, ValueError, OSError, RuntimeError) as error:
+            self.report(str(error))
+
+    def check_api_member(self, generate=False):
+        row = self.selected_account()
+        if not row or not row.get("api_member"): return
+        try:
+            member = copy.deepcopy(self.store.data["pool"]["api_members"][row["name"]])
+            proxy = validate_proxy(self.pool_proxy.text(), allow_empty=True)
+            def success(result):
+                result["checked_at"] = int(time.time())
+                result["fingerprint"] = settings_fingerprint(member)
+                self.api_checks[row["name"]] = result
+                self.set_accounts(self.accounts)
+                self.report(member["label"] + "：" + result["message"], "member.api.check")
+            self.run_action(lambda _: probe_api_member(member, proxy, generate=generate), success)
+        except (ValueError, OSError) as error:
+            self.report(str(error))
 
     def read_models(self):
         try:
@@ -1181,6 +1391,7 @@ class AiAssistantsPage(QWidget):
         busy = self.worker is not None
         running = self.is_running
         selected = self.selected_account() is not None
+        api_selected = selected and self.selected_account().get("api_member", False)
         for field in (self.port, self.pool_proxy):
             field.setEnabled(not running and not busy and not self.stopping)
         self.strategy.setEnabled(not busy and not self.stopping and (not running or self.ready))
@@ -1196,10 +1407,13 @@ class AiAssistantsPage(QWidget):
         self.login_button.setEnabled(self.ready and not busy and not self.login_state and not self.stopping)
         self.cancel_button.setEnabled(bool(self.login_state) and not busy)
         self.reopen_login.setEnabled(bool(self.login_state))
-        self.toggle_button.setEnabled(self.ready and selected and not busy)
-        self.remove_button.setEnabled(self.ready and selected and not busy)
-        self.quota_button.setEnabled(self.ready and selected and not busy and not self.stopping)
-        self.all_quotas_button.setEnabled(self.ready and bool(self.accounts) and not busy and not self.stopping)
+        self.toggle_button.setEnabled((self.ready or api_selected) and selected and not busy and not self.stopping)
+        self.remove_button.setEnabled((self.ready or api_selected) and selected and not busy and not self.stopping)
+        self.quota_button.setEnabled(self.ready and selected and not api_selected and not busy and not self.stopping)
+        self.all_quotas_button.setEnabled(self.ready and any(not row.get("api_member") for row in self.accounts) and not busy and not self.stopping)
+        self.add_api_button.setEnabled(not busy and not self.stopping and (not running or self.ready))
+        for button in (self.edit_api_button, self.check_api_button, self.verify_api_button):
+            button.setEnabled(api_selected and not busy and not self.stopping and (not running or self.ready))
         self.member_rule_button.setEnabled(selected and not busy and not self.stopping)
         self.prefer_button.setEnabled(selected and not busy and not self.stopping
                                      and not self.selected_account().get("disabled", False))
@@ -1213,7 +1427,10 @@ class AiAssistantsPage(QWidget):
         pool = self.active_pool or self.store.data["pool"]
         for line in output.splitlines():
             # HTTP request logs are disabled. Retain short startup diagnostics only.
-            clean = redact(line[:1000], [pool["api_key"], pool["management_key"]])
+            secret_values = [pool["api_key"], pool["management_key"]]
+            for member in pool.get("api_members", {}).values():
+                secret_values.extend([member.get("api_key", ""), *member.get("headers", {}).values()])
+            clean = redact(line[:1000], secret_values)
             if re.search(r"gin_logger\.go:\d+\]\s+2\d\d\b", clean):
                 continue  # The corresponding user action is recorded separately.
             try:

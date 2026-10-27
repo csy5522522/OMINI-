@@ -81,6 +81,44 @@ class MemoHTTPTests(unittest.TestCase):
         client.request("register", {"email": name + "@example.test", "password": "FixturePass-123"})
         return client
 
+    def test_background_sync_does_not_replace_active_document_and_applies_after_switch(self):
+        client = self.client('active-editor')
+        with tempfile.TemporaryDirectory() as directory:
+            store = TextNotesStore(Path(directory))
+            path = store.create('正在编辑', '本机正文')
+            memo_id = store.for_path(path)['id']
+            sync_memos(directory, client.url, client.token)
+            remote = next(m for m in client.api('/api/memos')['memos'] if m['id'] == memo_id)
+            client.api('/api/memos', {**remote, 'content': '云端新正文', 'base_version': remote['version']})
+            report = sync_memos(directory, client.url, client.token, protected=lambda key: key == memo_id)
+            self.assertEqual(report['deferred'], 1)
+            self.assertEqual(read_text_file(path)[0], '本机正文')
+            sync_memos(directory, client.url, client.token)
+            self.assertEqual(read_text_file(path)[0], '云端新正文')
+
+    def test_local_save_during_cloud_download_survives_and_syncs_as_conflict(self):
+        client = self.client('concurrent-local-save')
+        with tempfile.TemporaryDirectory() as directory:
+            store = TextNotesStore(Path(directory))
+            path = store.create('并行编辑', '第一版')
+            memo_id = store.for_path(path)['id']
+            sync_memos(directory, client.url, client.token)
+            remote = next(m for m in client.api('/api/memos')['memos'] if m['id'] == memo_id)
+            client.api('/api/memos', {**remote, 'content': '云端修改', 'base_version': remote['version']})
+            real_api = AccountClient.api
+            def delayed(api, route, value=None):
+                result = real_api(api, route, value)
+                if route == f'/api/memos/{memo_id}/history':
+                    store.save(path, '同步途中继续输入', read_text_file(path)[1])
+                return result
+            with patch.object(AccountClient, 'api', delayed):
+                report = sync_memos(directory, client.url, client.token)
+            self.assertEqual(report['deferred'], 1)
+            self.assertEqual(read_text_file(path)[0], '同步途中继续输入')
+            sync_memos(directory, client.url, client.token)
+            contents = {m['content'] for m in client.api('/api/memos')['memos']}
+            self.assertTrue({'云端修改', '同步途中继续输入'} <= contents)
+
     def test_operation_retries_preserve_history_and_session_over_http(self):
         client = self.client("response-loss")
         token = client.token
@@ -121,7 +159,12 @@ class MemoHTTPTests(unittest.TestCase):
             with self.assertRaises(ValueError): bob.api(path)
         alice.api("/api/settings", {"features": {"notes": False, "timetable": False}})
         self.assertTrue(bob.api("/api/state")["features"]["notes"])
-        with self.assertRaises(ValueError): alice.api("/api/memos")
+        self.assertEqual(len(alice.api("/api/memos")["memos"]), 1)
+        import requests
+        with requests.Session() as web:
+            web.trust_env = False
+            web.cookies.set("omini_session", alice.token)
+            self.assertEqual(web.get(self.url + "/api/memos", headers={"X-Omini-Client": "web"}, timeout=8).status_code, 403)
         alice.api("/api/settings", {"features": {"notes": True}})
         self.assertEqual(len(alice.api("/api/memos")["memos"]), 1)
         with self.assertRaises(ValueError): alice.api("/api/admin/users")

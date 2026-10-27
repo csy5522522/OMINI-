@@ -1,11 +1,14 @@
 ﻿param(
-    [string]$DistDir = 'dist-release',
-    [string]$WorkDir = 'build-release'
+    [string]$DistDir = '',
+    [string]$WorkDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $releaseBuildRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $releaseBuildRoot
+$releaseVersion = (& py -3.11 app_version.py).Trim()
+if (-not $DistDir) { $DistDir = "artifacts/releases/$releaseVersion" }
+if (-not $WorkDir) { $WorkDir = ".cache/build/$releaseVersion" }
 $releaseAppName = 'Omini' + [char]0x5DE5 + [char]0x5177 + [char]0x7BB1
 $releaseSpec = Join-Path $releaseBuildRoot ($releaseAppName + '.spec')
 & py -3.11 -c 'import socks'
@@ -17,7 +20,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $releaseBuildRoot 'tools/cli-proxy-a
 & py -3.11 -m PyInstaller --noconfirm --distpath $DistDir --workpath $WorkDir $releaseSpec
 if ($LASTEXITCODE -ne 0) { throw 'Application build failed.' }
 $releaseRelease = Join-Path $DistDir $releaseAppName
-& py -3.11 (Join-Path $releaseBuildRoot 'release_packaging.py') --copy-tools (Join-Path $releaseRelease 'tools')
+& py -3.11 (Join-Path $releaseBuildRoot 'src/release_packaging.py') --copy-tools (Join-Path $releaseRelease 'tools')
 if ($LASTEXITCODE -ne 0) { throw 'Engine packaging failed.' }
 Copy-Item -LiteralPath (Join-Path $releaseBuildRoot 'README.md') -Destination (Join-Path $releaseRelease 'README.md') -Force
 Write-Output ('Built: ' + (Join-Path $releaseBuildRoot (Join-Path $releaseRelease ($releaseAppName + '.exe'))))

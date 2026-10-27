@@ -27,7 +27,7 @@ from account_client import AccountClient
 from text_notes_page import TextNotesPage
 
 ROOT = Path(__file__).resolve().parents[1]
-DEST = ROOT / 'verification' / 'memo-workspace'
+DEST = ROOT / 'artifacts/verification' / 'memo-workspace'
 
 
 def picture():

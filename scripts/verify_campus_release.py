@@ -13,6 +13,7 @@ import time
 def main():
     # When launched from scripts/, add the repository to the import path.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from app import APP_NAME, APP_VERSION
     executable = Path(sys.argv[1]).resolve()
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -48,7 +49,7 @@ def main():
             if exit_code != 0: raise RuntimeError(f"Packaged app exit code: {exit_code}")
             report = dict(version=APP_VERSION, executable=str(executable), window_verified=True,
                           startup_wifi_worker_verified=True, exit_code=exit_code, isolated_config=True)
-            Path(f"verification/campus-release-{APP_VERSION}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            Path(f"artifacts/verification/campus-release-{APP_VERSION}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             print("Packaged app startup and clean shutdown passed (isolated config).")
         finally:
             if process.poll() is None:

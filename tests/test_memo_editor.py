@@ -5,6 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+import threading
+import time
 
 from PIL import Image
 from PySide6.QtCore import QMimeData, Qt
@@ -132,6 +135,45 @@ class MemoEditorTests(unittest.TestCase):
         self.assertFalse(self.page.dirty)
         self.assertEqual(read_text_file(path)[0], self.page.editor.get_content())
         self.assertEqual(self.page.editor.textCursor().position(), cursor)
+
+    def test_slow_sync_keeps_typing_composition_undo_and_encrypted_local_saves(self):
+        path = self.load('初稿')
+        page = self.page
+        page.account = SimpleNamespace(url='https://fixture.test', token='fixture', user={'id': 'fixture'})
+        page.context = (page.account.url, 'fixture')
+        started, release = threading.Event(), threading.Event()
+        def slow_sync(directory, url, token, *, protected):
+            self.assertTrue(protected(page.current_memo['id']))
+            self.assertEqual(read_text_file(path)[0], '本机先保存')
+            started.set()
+            if not release.wait(8): raise RuntimeError('Fixture timed out')
+            return {'count': 1, 'conflicts': 0}
+        page.editor.selectAll(); page.editor.insertPlainText('本机先保存')
+        with patch('memo_sync.sync_memos', side_effect=slow_sync), patch.object(page.editor, 'load_content', wraps=page.editor.load_content) as load:
+            try:
+                page.sync_now()
+                self.assertTrue(started.wait(3))
+                self.assertTrue(page.isEnabled()); self.assertTrue(page.editor.isEnabled())
+                page.editor.insertPlainText('继续输入')
+                self.assertTrue(page.flush())
+                self.assertEqual(read_text_file(path)[0], '本机先保存继续输入')
+                for file in page.store.directory.rglob('*'):
+                    if file.is_file(): self.assertNotIn('继续输入'.encode(), file.read_bytes())
+                QApplication.sendEvent(page.editor, QInputMethodEvent('中文候选', []))
+                position = page.editor.textCursor().position()
+                release.set()
+                deadline = time.monotonic() + 5
+                while page.worker and time.monotonic() < deadline: QTest.qWait(10)
+                self.assertIsNone(page.worker)
+                self.assertTrue(page.editor.composing)
+                self.assertEqual(page.editor.textCursor().position(), position)
+                self.assertTrue(page.editor.document().isUndoAvailable())
+                load.assert_not_called()
+            finally:
+                release.set()
+                if page.worker: page.worker.wait(5000)
+                self.qt.processEvents()
+                QApplication.sendEvent(page.editor, QInputMethodEvent())
 
 
 if __name__ == '__main__': unittest.main()

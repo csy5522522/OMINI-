@@ -6,19 +6,18 @@ DESKTOP_FEATURES = {
     "campus": "校园网自动登录",
     "timetable": "学校课表",
     "notes": "超级备忘录",
-    "sync": "文件夹同步",
-    "ai_assistants": "AI 编程助手",
-    "more": "更多工具",
+    "ai_assistants": "AI 配置中心",
 }
 WEB_FEATURES = {key: DESKTOP_FEATURES[key] for key in ("timetable", "notes", "ai_assistants")}
-PAGE_FEATURES = ("downloads", "campus", "timetable", "notes", None,
-                 "sync", "ai_assistants", "more")
+PAGE_FEATURES = ("downloads", "campus", "timetable", "notes", None, "ai_assistants")
 
 
 def saved_page(settings):
     feature = settings.get("last_feature")
     if "last_feature" in settings and feature in PAGE_FEATURES:
         return PAGE_FEATURES.index(feature)
+    if "last_feature" in settings:
+        return PAGE_FEATURES.index(None)
     legacy = ("downloads", "campus", "timetable", "notes", None,
               "brightdata", "sync", "omini_api", "ai_assistants", "more")
     index = settings.get("last_page", 0)

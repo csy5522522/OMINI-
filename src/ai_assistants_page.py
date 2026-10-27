@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import json
 import os
 import re
@@ -18,8 +19,9 @@ from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout,
     QDialog, QDialogButtonBox, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QTextBrowser, QVBoxLayout, QWidget, QSplitter, QSizePolicy,
 )
+from ui_layout import FlowLayout
 
 from ai_assistants import (
     ASSISTANTS, ENGINE_REPO, ENGINE_VERSION, SCHEDULING, AssistantStore, PoolClient, atomic_json,
@@ -103,7 +105,7 @@ class AssistantProfile(QWidget):
         self.args.setMaximumHeight(70)
         launch_form.addRow("附加参数", self.args)
         layout.addWidget(program_box)
-        row = QHBoxLayout()
+        row = FlowLayout()
         self.save_button = QPushButton("保存配置")
         self.save_button.clicked.connect(lambda: owner.save_profile(name))
         row.addWidget(self.save_button)
@@ -116,7 +118,6 @@ class AssistantProfile(QWidget):
         copy_button = QPushButton("复制 PowerShell 环境")
         copy_button.clicked.connect(self.copy_environment)
         row.addWidget(copy_button)
-        row.addStretch()
         layout.addLayout(row)
         self.status = QLabel("尚未测试网络。")
         self.status.setWordWrap(True)
@@ -223,8 +224,6 @@ class ApiMemberDialog(QDialog):
         actions.addWidget(self.discover); actions.addWidget(self.verify)
         layout.addRow(actions)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存线路")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         self.buttons.accepted.connect(self.save)
         self.buttons.rejected.connect(self.reject)
         layout.addRow(self.buttons)
@@ -262,8 +261,7 @@ class ApiMemberDialog(QDialog):
             if result["ok"] and not generate and result["models"]:
                 existing = parse_models(self.models.toPlainText())
                 names = {m["name"] for m in existing}
-                aliases = {m["alias"] for m in existing}
-                existing.extend({"name": name, "alias": name} for name in result["models"] if name not in names and name not in aliases)
+                existing.extend({"name": name, "alias": name} for name in result["models"] if name not in names)
                 self.models.setPlainText(models_text(existing[:500]))
         if self.owner.run_action(lambda _: probe_api_member(member, proxy, generate=generate), success,
                                  lambda message: self.note.setText(message)):
@@ -329,7 +327,7 @@ class AiAssistantsPage(QWidget):
         self.login_timer.timeout.connect(self.poll_login)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 12)
-        heading = QLabel("AI 编程助手")
+        heading = QLabel("AI 配置中心")
         heading.setObjectName("pageTitle")
         layout.addWidget(heading)
         subtitle = QLabel("分别设置代理，一键启动 Codex、Gemini、反重力和 Claude Code；混合管理登录成员与 API Key 线路。")
@@ -415,7 +413,7 @@ class AiAssistantsPage(QWidget):
         key.clicked.connect(lambda: self.copy_key())
         endpoint_bar.addWidget(key)
         form.addRow("本地接口", endpoint_bar)
-        controls = QHBoxLayout()
+        controls = FlowLayout()
         self.install_button = QPushButton("安装代理引擎")
         self.install_button.clicked.connect(self.install)
         self.start_button = QPushButton("保存并启动服务")
@@ -426,13 +424,12 @@ class AiAssistantsPage(QWidget):
         self.save_pool_button.clicked.connect(self.apply_schedule)
         for button in (self.install_button, self.start_button, self.stop_button, self.save_pool_button):
             controls.addWidget(button)
-        controls.addStretch()
         form.addRow(controls)
         self.engine_status = QLabel()
         self.engine_status.setObjectName("muted")
         form.addRow(self.engine_status)
         layout.addWidget(box)
-        members = QHBoxLayout()
+        members = FlowLayout()
         self.login_button = QPushButton("登录并添加成员")
         self.login_button.clicked.connect(self.begin_login)
         self.import_button = QPushButton("导入账号 JSON")
@@ -445,9 +442,8 @@ class AiAssistantsPage(QWidget):
         self.remove_button.clicked.connect(self.remove_account)
         for button in (self.login_button, self.import_button, self.refresh_button, self.toggle_button, self.remove_button):
             members.addWidget(button)
-        members.addStretch()
         layout.addLayout(members)
-        api_tools = QHBoxLayout()
+        api_tools = FlowLayout()
         self.add_api_button = QPushButton("添加 API / Key")
         self.add_api_button.clicked.connect(lambda: self.edit_api_member(False))
         self.edit_api_button = QPushButton("编辑 API 线路")
@@ -458,7 +454,7 @@ class AiAssistantsPage(QWidget):
         self.verify_api_button.clicked.connect(lambda: self.check_api_member(True))
         for button in (self.add_api_button, self.edit_api_button, self.check_api_button, self.verify_api_button):
             api_tools.addWidget(button)
-        api_tools.addStretch(); layout.addLayout(api_tools)
+        layout.addLayout(api_tools)
         login_row = QHBoxLayout()
         self.login_url = QLineEdit()
         self.login_url.setReadOnly(True)
@@ -471,14 +467,14 @@ class AiAssistantsPage(QWidget):
         self.cancel_button.clicked.connect(self.cancel_login)
         login_row.addWidget(self.cancel_button)
         layout.addLayout(login_row)
-        quota_tools = QHBoxLayout()
+        quota_tools = FlowLayout()
         self.quota_button = QPushButton("查询所选额度"); self.quota_button.clicked.connect(lambda: self.query_quotas(False))
         self.all_quotas_button = QPushButton("查询全部额度"); self.all_quotas_button.clicked.connect(lambda: self.query_quotas(True))
         self.member_rule_button = QPushButton("成员优先级 / 权重"); self.member_rule_button.clicked.connect(self.edit_member_rule)
         self.prefer_button = QPushButton("设为优先账号"); self.prefer_button.clicked.connect(self.prefer_account)
         for button in (self.quota_button, self.all_quotas_button, self.member_rule_button, self.prefer_button):
             quota_tools.addWidget(button)
-        quota_tools.addStretch(); layout.addLayout(quota_tools)
+        layout.addLayout(quota_tools)
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(["成员账号 / API 线路", "状态", "5 小时剩余", "周剩余", "优先级", "权重", "参与分配", "API 协议", "模型 ID", "线路检查"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -493,6 +489,8 @@ class AiAssistantsPage(QWidget):
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().hide()
         self.table.setMinimumHeight(130)
+        self.table.setMinimumWidth(0)
+        self.table.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.table.itemSelectionChanged.connect(self.update_controls)
         layout.addWidget(self.table, 1)
         self.quota_note = QLabel("额度为查询时的剩余百分比与重置时间；未返回的周期显示「未返回」。选中账号后可单独查询。")
@@ -500,6 +498,9 @@ class AiAssistantsPage(QWidget):
         models = QHBoxLayout()
         self.model = QComboBox()
         self.model.setEditable(True)
+        self.model.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model.setMinimumContentsLength(8)
         self.model.setPlaceholderText("读取模型列表后选择，或填写账号实际支持的模型")
         self.model.setCurrentText(pool.get("model", ""))
         models.addWidget(QLabel("模型"))
@@ -518,19 +519,32 @@ class AiAssistantsPage(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(120)
-        self.log.setMaximumHeight(90)
-        self.log.setMinimumHeight(70)
-        layout.addWidget(self.log)
+        self.log.setMinimumHeight(55)
+        self.log.setPlaceholderText("账号池日志 · 拖动上方分隔条调整高度")
+        self.log.setToolTip("拖动日志上方分隔条调整高度，布局自动记忆")
         for field in (self.port, self.pool_proxy, self.strategy, self.endpoint, self.login_url, self.model):
-            field.setMinimumHeight(32)
+            field.setMinimumHeight(28)
+            field.setMinimumWidth(0)
         for button in widget.findChildren(QPushButton):
-            button.setMinimumHeight(30)
+            button.setMinimumHeight(28)
+        widget.setStyleSheet("QPushButton { padding: 5px 9px; } QGroupBox { margin-top: 10px; } QCheckBox { spacing: 5px; }")
+        layout.setSpacing(6)
+        layout.setContentsMargins(10, 8, 10, 8)
+        form.setVerticalSpacing(5)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(widget)
         self.pool_scroll = scroll
-        self.tabs.addTab(scroll, "成员账号 / API 池")
+        self.pool_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.pool_splitter.setObjectName("poolLogSplitter")
+        self.pool_splitter.setHandleWidth(7)
+        self.pool_splitter.setChildrenCollapsible(False)
+        self.pool_splitter.addWidget(scroll)
+        self.pool_splitter.addWidget(self.log)
+        self.pool_splitter.setStretchFactor(0, 1)
+        self.pool_splitter.setSizes([600, 125])
+        self.tabs.addTab(self.pool_splitter, "成员账号 / API 池")
         self.strategy.currentIndexChanged.connect(self.schedule_changed)
         self.schedule_changed()
 
@@ -564,6 +578,10 @@ class AiAssistantsPage(QWidget):
         rows, errors = local_members(self.root)
         self.set_accounts(rows, persist=False)
         ui = state.get("ui", {})
+        splitter = ui.get("pool_splitter", "")
+        if isinstance(splitter, str) and splitter:
+            try: self.pool_splitter.restoreState(base64.b64decode(splitter, validate=True))
+            except (ValueError, TypeError): pass
         name = ui.get("member", "")
         for index, row in enumerate(rows):
             if row.get("name") == name:
@@ -623,6 +641,7 @@ class AiAssistantsPage(QWidget):
         self.table.itemSelectionChanged.connect(lambda: self.queue_save("所选成员"))
         self.table.horizontalHeader().sectionResized.connect(lambda: self.queue_save())
         self.pool_scroll.verticalScrollBar().valueChanged.connect(lambda: self.queue_save())
+        self.pool_splitter.splitterMoved.connect(lambda: self.queue_save())
 
     def queue_save(self, label=""):
         if self._restoring or self.stopping:
@@ -639,6 +658,7 @@ class AiAssistantsPage(QWidget):
                     models=[self.model.itemText(i) for i in range(self.model.count())],
                     ui={"tab": self.tabs.currentIndex(), "member": selected.get("name", "") if selected else "",
                         "pool_scroll": self.pool_scroll.verticalScrollBar().value(),
+                        "pool_splitter": base64.b64encode(bytes(self.pool_splitter.saveState())).decode("ascii"),
                         "columns": [self.table.columnWidth(i) for i in range(self.table.columnCount())]},
                     draft={"profiles": {name: profile.raw_value() for name, profile in self.profiles.items()},
                            "pool": {"port": self.port.value(), "proxy": self.pool_proxy.text(),
@@ -1306,11 +1326,8 @@ class AiAssistantsPage(QWidget):
         if editing and (not row or not row.get("api_member")): return
         member = self.store.data["pool"].get("api_members", {}).get(row["name"]) if row else None
         dialog = ApiMemberDialog(self, member)
-        try:
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.save_api_member(row["name"] if row else "api-" + uuid.uuid4().hex, dialog.value)
-        finally:
-            dialog.deleteLater()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.save_api_member(row["name"] if row else "api-" + uuid.uuid4().hex, dialog.value)
 
     def save_api_member(self, name, value):
         try:

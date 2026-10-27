@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 from tests.account_sync_check import Service
 
 ROOT = Path(__file__).resolve().parents[1]
-DEST = ROOT / 'verification' / 'web-performance'
+DEST = ROOT / 'artifacts/verification' / 'web-performance'
 
 
 def resources(page):

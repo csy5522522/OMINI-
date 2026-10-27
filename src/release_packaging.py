@@ -1,6 +1,7 @@
 """Package native Widgets and download engines; use external browsers/FFmpeg."""
 from pathlib import Path
 import shutil
+from project_paths import PROJECT_ROOT
 
 
 EXCLUDED_QT_FRONTENDS = ['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtOpenGL',
@@ -8,7 +9,8 @@ EXCLUDED_QT_FRONTENDS = ['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtOpenGL',
                          'PySide6.QtWebEngineQuick', 'PySide6.QtWebChannel',
                          'icloud_notes_page', 'xuanwu_ai_page',
                          'omini_api', 'omini_api_page', 'omini_api_runner', 'omini_api_self_test',
-                         'brightdata', 'brightdata_page', 'brightdata_self_test']
+                         'brightdata', 'brightdata_page', 'brightdata_self_test',
+                         'folder_sync', 'folder_sync_page', 'tailscale_sync', 'sync_self_test']
 QT_LOCALES = ('_en.qm', '_en_US.qm', '_en_GB.qm', '_zh_CN.qm', '_zh_TW.qm')
 
 
@@ -32,7 +34,7 @@ def keep_resource(destination: str) -> bool:
 
 
 def external_tool_file(name: str) -> bool:
-    return name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay'))
+    return name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay', 'syncthing'))
 
 
 def copy_release_tools(source: Path, destination: Path) -> None:
@@ -59,4 +61,4 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--copy-tools', type=Path, required=True)
     args = parser.parse_args()
-    copy_release_tools(Path(__file__).resolve().parent / 'tools', args.copy_tools)
+    copy_release_tools(PROJECT_ROOT / 'tools', args.copy_tools)

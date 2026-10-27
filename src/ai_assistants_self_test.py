@@ -40,13 +40,18 @@ def run_ai_assistants_test(app_module) -> int:
                 qt.processEvents()
                 page = window.ai_assistants_page
                 assert window.stack.currentWidget() is page
-                assert "AI 编程助手" in window.nav.item(app_module.PAGE_FEATURES.index("ai_assistants")).text()
+                assert "AI 配置中心" in window.nav.item(app_module.PAGE_FEATURES.index("ai_assistants")).text()
                 assert page.tabs.count() == 7
                 assert not page.is_running
                 page.profiles["claude"].proxy.setText("http://127.0.0.1:7899")
                 page.save_profile("claude")
                 assert page.profiles["codex"].proxy.text() == "http://127.0.0.1:7890"
                 page.tabs.setCurrentIndex(4)
+                page.pool_splitter.setSizes([480, 180]); QTest.qWait(60)
+                assert page.log.height() > 90
+                assert page.pool_splitter.handle(1).isVisible()
+                assert page.save_session()
+                assert AssistantState(page.root).data['ui']['pool_splitter']
                 page.pool_proxy.clear()
                 with socket.socket() as listener:
                     listener.bind(("127.0.0.1", 0))
@@ -178,6 +183,7 @@ def run_ai_assistants_test(app_module) -> int:
                           "mixed_api_oauth_members": True, "api_model_registration": True, "api_restart_restore": True,
                           "offline_members_after_restart": True, "persistent_quotas_and_history": True,
                           "resume_running_service": True, "manual_stop_preserved": True}
+                report["resizable_log_and_saved_layout"] = True
             finally:
                 if window is not None:
                     window.ai_assistants_page.stop()

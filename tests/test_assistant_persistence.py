@@ -131,6 +131,34 @@ class RestartPageTests(unittest.TestCase):
         page.deleteLater()
         self.qt.processEvents()
 
+    def test_pool_log_drag_wrap_and_layout_restore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            page = AiAssistantsPage(root)
+            try:
+                page.resize(1120, 850); page.tabs.setCurrentIndex(4); page.show(); QTest.qWait(100)
+                page.pool_splitter.setSizes([450, 220]); QTest.qWait(30)
+                self.assertGreater(page.log.height(), 150)
+                page.pool_splitter.moveSplitter(page.pool_splitter.height() - 165, 1)
+                QTest.qWait(30)
+                saved_sizes = page.pool_splitter.sizes()
+                self.assertTrue(page.save_session())
+                wide_y = page.verify_api_button.y()
+                page.resize(480, 850); QTest.qWait(100)
+                self.assertGreater(page.verify_api_button.y(), wide_y)
+                self.assertEqual(page.pool_scroll.horizontalScrollBar().maximum(), 0)
+                page.resize(1120, 850); QTest.qWait(50)
+                page.pool_splitter.setSizes(saved_sizes)
+                self.assertTrue(page.save_session())
+            finally:
+                page.hide(); self.close_page(page)
+            restored = AiAssistantsPage(root)
+            try:
+                restored.resize(1120, 850); restored.show(); QTest.qWait(100)
+                self.assertEqual(restored.tabs.currentIndex(), 4)
+                self.assertLess(abs(restored.pool_splitter.sizes()[1] - saved_sizes[1]), 10)
+            finally:
+                restored.hide(); self.close_page(restored)
     def test_legacy_members_and_autosaved_actions_restore_without_starting_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

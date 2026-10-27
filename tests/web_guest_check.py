@@ -17,7 +17,7 @@ from tests.account_sync_check import Service
 from text_notes import TextNotesStore, read_text_file
 
 ROOT = Path(__file__).resolve().parents[1]
-DEST = ROOT / 'verification' / 'web-guest'
+DEST = ROOT / 'artifacts/verification' / 'web-guest'
 
 
 def main():

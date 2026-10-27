@@ -13,6 +13,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 from app_version import APP_VERSION
 from updater import REPOSITORY
 
@@ -70,12 +71,12 @@ def publish(make_public: bool = False) -> dict:
     refs = dict((line.split()[1], line.split()[0]) for line in remote_refs.splitlines())
     if refs.get("refs/heads/main") != commit or refs.get(f"refs/tags/{tag}^{{}}") != commit:
         raise RuntimeError("Push the source commit and annotated release tag before publishing")
-    setup = ROOT / f"dist-installer-{APP_VERSION}" / f"Omini工具箱-{APP_VERSION}-Setup.exe"
+    setup = ROOT / f"artifacts/installers/{APP_VERSION}" / f"Omini工具箱-{APP_VERSION}-Setup.exe"
     with setup.open("rb") as stream:
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     if setup.with_suffix(".exe.sha256").read_text(encoding="utf-8-sig").split()[0] != checksum:
         raise RuntimeError("The installer SHA-256 does not match its checksum file")
-    verification = json.loads((ROOT / "verification/installer-report.json").read_text(encoding="utf-8"))
+    verification = json.loads((ROOT / "artifacts/verification/installer-report.json").read_text(encoding="utf-8"))
     if Path(verification["installer"]).resolve() != setup.resolve():
         raise RuntimeError("Verify this exact installer before publishing")
     if not verification.get("installed_desktop_smoke") or not all(value is True for key, value in verification.items() if key != "installer"):
@@ -132,7 +133,7 @@ def publish(make_public: bool = False) -> dict:
               "commit": commit, "tag": tag, "draft": release["draft"], "sha256": checksum,
               "assets": [{"name": item["name"], "bytes": item["size"], "url": item["browser_download_url"]}
                          for item in final_assets]}
-    (ROOT / "verification" / f"github-{tag}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (ROOT / "artifacts/verification" / f"github-{tag}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 

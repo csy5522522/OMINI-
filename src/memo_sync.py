@@ -10,19 +10,28 @@ from text_notes import TextNotesStore, read_text_file
 ASSET = re.compile(r"omini-asset://([a-f0-9]{64})")
 
 
-def sync_memos(directory, url, token):
+class MemoSyncDeferred(Exception):
+    """A live editor or a newer local action takes priority over cloud adoption."""
+
+
+def sync_memos(directory, url, token, *, protected=None):
     store = TextNotesStore(directory)
     client = AccountClient(url, token)
-    for path in store.files():
-        previous = store.for_path(path)
-        text, _ = read_text_file(path)
-        if text != previous["content"]: store.record(path, "external_edit")
+    with store.lock:
+        for path in store.files():
+            previous = store.for_path(path)
+            text, _ = read_text_file(path)
+            if text != previous["content"]: store.record(path, "external_edit")
     remote = {memo["id"]: memo for memo in client.api("/api/memos")["memos"]}
     ack = store.memos.get_data(store.owner, "sync", {})
     outbox = store.memos.get_data(store.owner, "sync_outbox", {})
     branches = store.memos.get_data(store.owner, "sync_conflicts", {})
     uploaded_assets = set()
     conflicts = 0
+    deferred = 0
+    with store.lock:
+        local_snapshot = store.memos.listing(store.owner)
+        observed = {memo["id"]: memo["version"] for memo in local_snapshot}
 
     def persist():
         with store.memos.transaction():
@@ -80,24 +89,36 @@ def sync_memos(directory, url, token):
 
     def adopt_remote(current, since=0):
         if since == current["version"]:
-            return store.memos.get(store.owner, current["id"])
+            known = ack.get(current["id"], {})
+            return {**store.memos.get(store.owner, current["id"]), "version": known.get("local", 0)}
         versions = client.api(f"/api/memos/{current['id']}/history")["versions"]
-        adopted = None
+        incoming = []
         for version in reversed(versions):
             if since < version["version"] <= current["version"]:
                 download_images(version["content"])
+                incoming.append(version)
+        if not incoming:
+            download_images(current["content"])
+            incoming.append({**current, "action": "sync"})
+        # Never hold the workspace lock across a network request. The editor can
+        # save encrypted local actions while uploads and downloads are in flight.
+        with store.lock:
+            try: live = store.memos.get(store.owner, current["id"])["version"]
+            except ValueError: live = 0
+            if (protected and protected(current["id"])) or live != observed.get(current["id"], 0):
+                raise MemoSyncDeferred()
+            for version in incoming:
                 adopted, _ = store.write_snapshot({**version, "id": current["id"]}, version["action"])
+                observed[current["id"]] = adopted["version"]
                 ack[current["id"]] = {"local": adopted["version"], "remote": version["version"]}
                 persist()
-        if adopted is None:
-            download_images(current["content"])
-            adopted, _ = store.write_snapshot(current)
         return adopted
 
     processed = set()
-    for local in store.memos.listing(store.owner):
+    def process_local(local):
+        nonlocal conflicts
         memo_id = local["id"]
-        if memo_id in processed: continue
+        if memo_id in processed: return
         base = ack.get(memo_id, {"local": 0, "remote": 0})
         pending = [v for v in reversed(store.memos.history(store.owner, memo_id)) if v["version"] > base["local"]]
         current = remote.get(memo_id)
@@ -145,8 +166,17 @@ def sync_memos(directory, url, token):
             ack[memo_id] = {"local": adopted["version"], "remote": current["version"]}
         remote.pop(memo_id, None)
         persist()
+    for local in local_snapshot:
+        try:
+            process_local(local)
+        except MemoSyncDeferred:
+            deferred += 1
+            remote.pop(local["id"], None)
     for memo_id, current in remote.items():
-        adopted = adopt_remote(current)
-        ack[memo_id] = {"local": adopted["version"], "remote": current["version"]}
-        persist()
-    return {"conflicts": conflicts, "count": len(store.files())}
+        try:
+            adopted = adopt_remote(current)
+            ack[memo_id] = {"local": adopted["version"], "remote": current["version"]}
+            persist()
+        except MemoSyncDeferred:
+            deferred += 1
+    return {"conflicts": conflicts, "count": len(store.files()), "deferred": deferred}

@@ -1,5 +1,0 @@
-Syncthing v2.1.6
-https://github.com/syncthing/syncthing/releases/download/v2.1.6/syncthing-windows-amd64-v2.1.6.zip
-SHA256: 589098269cabb9a5a1703a934305b4153609d7623e978e1c94f0f49d77ae5e9f
-Source: https://github.com/syncthing/syncthing
-License: MPL-2.0

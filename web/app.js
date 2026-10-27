@@ -140,7 +140,7 @@ function route() {
   if (location.hash !== `#${page}`) location.hash = `#${page}`;
   $$('.page').forEach(el => { el.hidden = el.id !== `page-${page}`; });
   $$('.nav-item[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
-  const title = {timetable:'学校课表',notes:'超级备忘录',ai_assistants:'AI 编程助手',workspace:'工作空间'}[page];
+  const title = {timetable:'学校课表',notes:'超级备忘录',ai_assistants:'AI 配置中心',workspace:'工作空间'}[page];
   $('#breadcrumb-page').textContent = title;
   document.title = `${title} · Omini`;
   if (page === 'timetable' && connected && !timetableLoaded) loadTimetable();

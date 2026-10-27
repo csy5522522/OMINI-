@@ -24,11 +24,13 @@ from memo_editor import MemoEditor, ASSET_PATTERN
 class MemoSyncWorker(QThread):
     def __init__(self, directory, url, token, parent):
         super().__init__(parent); self.directory, self.url, self.token = directory, url, token
+        self.protected = lambda memo_id: memo_id == parent._editing_memo_id
 
     def run(self):
         try:
             from memo_sync import sync_memos
-            self.result = sync_memos(self.directory, self.url, self.token)
+            self.result = sync_memos(self.directory, self.url, self.token,
+                                     protected=self.protected)
         except Exception as error:
             self.result = {"error": str(error) if isinstance(error, ValueError) else "同步暂未完成，本机内容和历史版本均已保留。"}
 
@@ -93,7 +95,12 @@ class TextNotesPage(QWidget):
         self.timer.setSingleShot(True)
         self.timer.setInterval(800)
         self.timer.timeout.connect(self.flush)
+        self.checkpoint_timer = QTimer(self)
+        self.checkpoint_timer.setInterval(3000)
+        self.checkpoint_timer.timeout.connect(self.flush)
+        self.checkpoint_timer.start()
         self.current_memo = None
+        self._editing_memo_id = None
         self.trash_mode = False
         self.title_dirty = False
         self.title_composing = False
@@ -246,7 +253,7 @@ class TextNotesPage(QWidget):
         self.config.update(directory=str(self.store.directory), last_file=self.current_path.name if self.current_path else "")
         atomic_text(self.config_path, json.dumps(self.config, ensure_ascii=False, indent=2))
 
-    def refresh_files(self, selected=""):
+    def refresh_files(self, selected="", *, preserve_editor=False):
         selected_id = self.current_memo["id"] if self.current_memo else None
         self.notes.blockSignals(True)
         self.notes.clear()
@@ -270,6 +277,9 @@ class TextNotesPage(QWidget):
         except (OSError, ValueError) as error:
             self.set_status(f"读取目录失败：{error}")
         self.notes.blockSignals(False)
+        if preserve_editor and self.current_memo:
+            self.filter_notes(self.search.text())
+            return
         if not self.notes.currentItem() and self.notes.count():
             self.notes.setCurrentRow(0)
         else:
@@ -292,6 +302,7 @@ class TextNotesPage(QWidget):
             self.notes.blockSignals(True); self.notes.setCurrentItem(previous); self.notes.blockSignals(False)
             return
         self.current_path, self.digest, self.current_memo = path, digest, memo
+        self._editing_memo_id = memo["id"] if memo and path else None
         self.loading = True; self.editor.load_content(text); self.loading = False
         self.dirty = False; self.title_dirty = False; self._saved_content = text
         writable = bool(path) and not self.trash_mode
@@ -327,6 +338,10 @@ class TextNotesPage(QWidget):
             self.timer.start(); return False
         if not self.dirty or not self.current_path:
             return True
+        with self.store.lock:
+            return self._flush_local()
+
+    def _flush_local(self):
         try:
             target = self.store.target(self.filename.text()) if self.title_dirty else self.current_path
             if target != self.current_path and target.exists(): raise ValueError("同名文件已存在。")
@@ -524,7 +539,7 @@ class TextNotesPage(QWidget):
     def stop(self):
         if not self.flush(): return False
         self.stopping = True
-        self.timer.stop(); self.sync_timer.stop()
+        self.timer.stop(); self.checkpoint_timer.stop(); self.sync_timer.stop()
         return True
 
     def open_account(self):
@@ -588,37 +603,21 @@ class TextNotesPage(QWidget):
             self.set_status("登录已过期，本机账号备忘录和编辑已保留；重新登录后继续同步。")
             return
         if not self.flush(): return
-        self._sync_view = (self.editor.textCursor().position(), self.editor.textCursor().anchor(), self.editor.verticalScrollBar().value(), self.editor.hasFocus())
         self.worker = MemoSyncWorker(self.store.directory, self.account.url, self.account.token, self)
         self.worker.finished.connect(self.sync_finished)
-        self.setEnabled(False); self.set_status("正在同步文字、图片与历史动作…")
+        self.set_status("本机内容已加密保存 · 后台同步中，可继续编辑")
         self.worker.start()
 
     def sync_finished(self):
         result = self.worker.result; self.worker.deleteLater(); self.worker = None
-        self.setEnabled(True)
         if self.stopping: return
         if self.pending_account:
             self.pending_account = False; self.switch_account(); return
-        selected = self.current_path.name if self.current_path else ""
-        changed = False
-        if self.current_path:
-            try: changed = read_text_file(self.current_path)[0] != self.editor.get_content()
-            except (OSError, ValueError): changed = True
-        elif self.current_memo: changed = True
-        if changed: self.current_path = None; self.current_memo = None
-        self.refresh_files(selected)
-        if self.current_path:
-            self.current_memo = self.store.for_path(self.current_path)
-            self._update_current_item()
-        if changed and hasattr(self, "_sync_view"):
-            position, anchor, scroll, focused = self._sync_view
-            cursor = self.editor.textCursor(); maximum = self.editor.document().characterCount() - 1
-            cursor.setPosition(min(anchor, maximum)); cursor.setPosition(min(position, maximum), cursor.MoveMode.KeepAnchor)
-            self.editor.setTextCursor(cursor); self.editor.verticalScrollBar().setValue(scroll)
-        if hasattr(self, "_sync_view") and self._sync_view[3]: self.editor.setFocus()
+        self.refresh_files(self.current_path.name if self.current_path else "", preserve_editor=True)
         if "error" in result: self.set_status(result["error"])
-        else: self.set_status(f"同步完成 · {result['count']} 篇备忘录" + (f" · 已保留 {result['conflicts']} 个冲突副本" if result["conflicts"] else ""))
+        elif self.dirty: self.set_status("继续编辑 · 稍后加密保存到本机")
+        elif result.get("deferred"): self.set_status("后台同步完成 · 当前文档的云端更新将在切换后合并")
+        else: self.set_status(f"本机加密保存 · 后台同步完成 · {result['count']} 篇备忘录" + (f" · 已保留 {result['conflicts']} 个冲突副本" if result["conflicts"] else ""))
 
     def insert_image(self):
         if not self.current_path: return

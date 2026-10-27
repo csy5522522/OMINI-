@@ -24,7 +24,7 @@ def account_key(url, user_id):
 
 
 def preferences(settings):
-    return copy.deepcopy({k: settings[k] for k in ("theme", "concurrency", "features") if k in settings})
+    return validate_resource("preferences", {k: settings[k] for k in ("theme", "concurrency", "features") if k in settings})
 
 
 def read_assistants(root):
@@ -244,10 +244,6 @@ class DesktopAccountSync(QObject):
 
     def refresh_settings(self):
         page = self.window.settings_page
-        from feature_config import enabled_features
-        for key, flag in enabled_features(self.window.settings).items():
-            page.feature_checks[key].setChecked(flag)
-        page.concurrency.setValue(self.window.settings.get("concurrency", 2))
         page.theme.setCurrentText(self.window.settings.get("theme", "深色"))
 
     def sync_now(self):
@@ -311,10 +307,6 @@ class DesktopAccountSync(QObject):
             self.panel.sync_status.setText("同步内容已保留 · " + str(error))
 
     def apply(self, value, before):
-        from feature_config import enabled_features
-        requested = enabled_features({**self.window.settings, **value["preferences"]})
-        if not self.window.prepare_features(requested, warn=False):
-            raise ValueError("当前笔记尚未保存，云端功能设置将在保存后重试。")
         self.window.settings.update(value["preferences"])
         if value["schedule"] != before["schedule"]:
             schedule = value["schedule"]

@@ -15,7 +15,7 @@ import requests
 
 from campus_network import protect_password, unprotect_password
 
-REPOSITORY = "csy5522522/OMINI-"
+REPOSITORY = "csy5522522/OMINI-Tool"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
 API_ROOT = "https://api.github.com"
 DOWNLOAD_HOSTS = {"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",

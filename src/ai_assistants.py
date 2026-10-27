@@ -1,5 +1,6 @@
 """Per-process proxy profiles and the pinned, local CLIProxyAPI integration."""
 from __future__ import annotations
+from project_paths import RESOURCE_ROOT
 
 import base64
 import copy
@@ -94,7 +95,6 @@ class AssistantStore:
             for name in ASSISTANTS:
                 self.data["profiles"][name].update(saved.get("profiles", {}).get(name, {}))
             self.data["pool"].update(saved.get("pool", {}))
-            self.data["pool"]["api_members"] = validate_api_members(self.data["pool"].get("api_members", {}))
         except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
             self.error = str(error)
             self.writable = False
@@ -344,7 +344,7 @@ def engine_path(root: Path) -> Path | None:
     roots = [Path(root) / "bin"]
     for ancestor in Path(root).parents:
         if ancestor.name == "account-workspaces": roots.append(ancestor.parent / "ai-assistants/bin")
-    roots.append(Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "tools")
+    roots.append(RESOURCE_ROOT / "tools")
     if getattr(sys, "frozen", False):
         roots.append(Path(sys.executable).parent / "tools")
     for directory in roots:

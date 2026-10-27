@@ -16,6 +16,8 @@ venv/
 /dist/
 /build-*/
 /dist-*/
+/artifacts/
+/local-data/
 /gallery-dl.spec
 /spotdl.spec
 
@@ -58,10 +60,6 @@ desktop.ini
 # Downloaded third-party executables (distributed with Release installers)
 /tools/*.exe
 /tools/*.dll
-
-# Local screenshots, live API responses and machine-specific verification logs
-/verification/*
-!/verification/portal-security.js
 
 # Omini API personal data stays outside version control and release sources
 **/accounts/

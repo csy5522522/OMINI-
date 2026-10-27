@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
+import threading
+from functools import wraps
 from contextlib import contextmanager
 from collections import Counter
 from memo_store import MemoStore, validate_text
@@ -17,6 +19,22 @@ from memo_crypto import PREFIX, MemoCipher, atomic_bytes
 
 
 MAX_NOTE_BYTES = 16 * 1024 * 1024
+_workspace_locks = {}
+_workspace_locks_guard = threading.Lock()
+
+
+def workspace_lock(directory):
+    key = os.path.normcase(str(Path(directory).resolve()))
+    with _workspace_locks_guard:
+        return _workspace_locks.setdefault(key, threading.RLock())
+
+
+def serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 def read_text_file(path: Path) -> tuple[str, str]:
@@ -57,6 +75,11 @@ def atomic_text(path: Path, text: str) -> None:
 class TextNotesStore:
     def __init__(self, directory: Path):
         self.directory = Path(directory).resolve()
+        self.lock = workspace_lock(self.directory)
+        with self.lock:
+            self._initialize()
+
+    def _initialize(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         self.memos = MemoStore(self.directory / ".omini-memos.sqlite3",
                                existing_files=any(self.directory.rglob("*.ominote")))
@@ -175,6 +198,7 @@ class TextNotesStore:
         memo_id = next((key for key, name in mapping.items() if name == path.name), None)
         return self.memos.get(self.owner, memo_id) if memo_id else self.record(path, "import")
 
+    @serialized
     def write_snapshot(self, value, action="sync"):
         validate_text(value["title"], value["content"])
         mapping = self.mapping()
@@ -215,6 +239,7 @@ class TextNotesStore:
         self._titles[path.name] = name[:160]
         return path
 
+    @serialized
     def create(self, title: str, text: str = "") -> Path:
         path = self.target(title)
         validate_text(self._titles[path.name], text)
@@ -228,6 +253,7 @@ class TextNotesStore:
             self.record(path, "create")
         return path
 
+    @serialized
     def save(self, path: Path, text: str, expected_digest: str) -> str:
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
             raise ValueError("文件已被其他程序修改或移动。请先「另存为」保留编辑，或「重新读取」加载磁盘内容。")
@@ -239,6 +265,7 @@ class TextNotesStore:
             self.record(path)
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    @serialized
     def trash(self, path: Path) -> Path:
         directory = self.directory / ".trash"
         directory.mkdir(exist_ok=True)
@@ -250,6 +277,7 @@ class TextNotesStore:
             self.memos.set_data(self.owner, "paths", mapping)
         return destination
 
+    @serialized
     def rename(self, path, target):
         if target != path and target.exists(): raise FileExistsError(target)
         with self._mutation(path, target):

@@ -1,6 +1,6 @@
 """Single source of truth for application and installer versions."""
 
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.6"
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ def main():
         installed = False
         try:
             command = [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/TASKS=",
-                       f"/DIR={target}", f"/GROUP={group}", f"/LOG={root / 'verification/installer-install.log'}"]
+                       f"/DIR={target}", f"/GROUP={group}", f"/LOG={root / 'artifacts/verification/installer-install.log'}"]
             if args.isolated_registration:
                 command.extend(["/OMINIVERIFY=1", "/NOCLOSEAPPLICATIONS"])
             run(command, environment)
@@ -84,14 +84,16 @@ def main():
             report["installed_app_registration"] = entry["DisplayName"] == "Omini工具箱" and entry["DisplayVersion"] == version
             app = target / "Omini工具箱.exe"
             report["complete_install"] = all((target / item).is_file() for item in
-                ("Omini工具箱.exe", "tools/syncthing.exe", "_internal/python311.dll", "安装版使用说明.txt", "unins000.exe"))
+                ("Omini工具箱.exe", "tools/cli-proxy-api.exe", "_internal/python311.dll", "安装版使用说明.txt", "unins000.exe"))
             assert report["complete_install"]
             report["no_browser_or_bundled_ffmpeg"] = not any(
                 'webengine' in path.name.lower() or path.name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay'))
                 for path in target.rglob('*'))
             assert report["no_browser_or_bundled_ffmpeg"]
-            source = root / f"dist-sync-{version}/Omini工具箱"
-            for name in ("Omini工具箱.exe", "tools/syncthing.exe"):
+            report["folder_sync_removed"] = not any(path.name.lower().startswith('syncthing') for path in target.rglob('*'))
+            assert report["folder_sync_removed"]
+            source = root / f"artifacts/releases/{version}/Omini工具箱"
+            for name in ("Omini工具箱.exe", "tools/cli-proxy-api.exe"):
                 with (source / name).open("rb") as original, (target / name).open("rb") as copied:
                     assert hashlib.file_digest(original, "sha256").digest() == hashlib.file_digest(copied, "sha256").digest()
             report["binary_integrity"] = True
@@ -101,10 +103,6 @@ def main():
             report["start_menu_shortcut"] = (shortcut_root / "Omini工具箱.lnk").is_file()
             user_file = target / "my-personal-file.txt"
             user_file.write_text("keep-extra-files", encoding="utf-8")
-            run([str(app), "--self-test-sync"], environment)
-            app_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
-            assert app_report and all(value is True for value in app_report.values())
-            report["installed_sync_smoke"] = True
             run([str(app), "--self-test-update"], environment)
             update_report = json.loads((temp_root / "app-check.json").read_text(encoding="utf-8"))
             assert update_report and all(value is True for value in update_report.values())
@@ -119,23 +117,28 @@ def main():
             legacy_cache.write_text('legacy-encrypted-cache-sentinel', encoding='utf-8')
             report["installed_encrypted_notes_smoke"] = True
             run([str(app), "--self-test-settings"], environment)
-            settings_report = json.loads((root / f"verification/settings-self-test-{version}.json").read_text(encoding="utf-8"))
+            settings_report = json.loads((root / f"artifacts/verification/settings-self-test-{version}.json").read_text(encoding="utf-8"))
             assert settings_report.get("ok") and settings_report.get("memo_images_sync_and_rollback")
+            assert settings_report.get("background_sync_keeps_editor_active")
+            report["background_memo_sync_keeps_editor_active"] = True
             report["installed_account_memos_smoke"] = True
             report["installed_desktop_smoke"] = True
             ai_environment = environment.copy()
             ai_environment.pop("QT_QPA_PLATFORM", None)
             ai_environment["OMINI_SELF_TEST_LOG"] = str(temp_root / "ai-check.json")
-            ai_environment["OMINI_AI_CAPTURE_DIR"] = str(root / "verification" / ("installed-ai-" + version))
+            ai_environment["OMINI_AI_CAPTURE_DIR"] = str(root / "artifacts/verification" / ("installed-ai-" + version))
             run([str(app), "--self-test-ai-assistants"], ai_environment)
             ai_report = json.loads((temp_root / "ai-check.json").read_text(encoding="utf-8"))
             assert ai_report.get("ok") and ai_report.get("quota_columns_and_batch_query") and ai_report.get("live_balanced_scheduling")
+            assert ai_report.get("resizable_log_and_saved_layout")
+            report["resizable_ai_log_and_saved_layout"] = True
             assert all(ai_report.get(key) for key in ("offline_members_after_restart", "persistent_quotas_and_history",
                                                       "resume_running_service", "manual_stop_preserved"))
             report["installed_ai_quota_scheduling_smoke"] = True
             report["installed_ai_restart_history_smoke"] = True
             # Real encrypted user data lives outside the installation directory.
             sys.path.insert(0, str(root))
+            sys.path.insert(0, str(root / "src"))
             from ai_assistants import AssistantStore, atomic_json
             from assistant_data import AssistantState, OperationHistory
             ai_data = notes_root / "ai-assistants"
@@ -152,7 +155,8 @@ def main():
             session_original = session_store.path.read_bytes()
             note_key = notes_root / "text-notes/.omini-memos.sqlite3.key"
             key_original = note_key.read_bytes()
-            obsolete = ["_internal/omini_api/runtime.py", "_internal/omini_api_page.py", "_internal/brightdata_page.py", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
+            obsolete = ["tools/syncthing.exe", "tools/syncthing-release.txt", "文件夹同步使用说明.txt",
+                        "_internal/omini_api/runtime.py", "_internal/omini_api_page.py", "_internal/brightdata_page.py", "tools/ffmpeg.exe", "tools/ffprobe.exe", "tools/ffmpeg-release.json",
                         "_internal/PySide6/Qt6WebEngineCore.dll", "_internal/PySide6/QtWebEngineCore.pyd",
                         "_internal/PySide6/QtWebEngineProcess.exe", "_internal/PySide6/resources/icudtl.dat",
                         "_internal/PySide6/translations/qtwebengine_locales/en-US.pak",
@@ -175,9 +179,9 @@ def main():
             uninstaller = target / "unins000.exe"
             assert uninstaller.resolve().parent == target.resolve()
             run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                 f"/LOG={root / 'verification/installer-uninstall.log'}"], environment)
+                 f"/LOG={root / 'artifacts/verification/installer-uninstall.log'}"], environment)
             installed = False
-            report["uninstalled_program"] = not app.exists() and not (target / "tools/syncthing.exe").exists()
+            report["uninstalled_program"] = not app.exists() and not (target / "tools/cli-proxy-api.exe").exists()
             report["uninstall_registration_removed"] = uninstall_entry(app_key) is None
             report["shortcuts_removed"] = not (shortcut_root / "Omini工具箱.lnk").exists()
             report["personal_settings_preserved"] = "keep-personal-settings" in data.read_text(encoding="utf-8")
@@ -189,7 +193,7 @@ def main():
                 and legacy_cache.read_text(encoding='utf-8') == 'legacy-encrypted-cache-sentinel')
             report["uninstall_preserves_ai_members_state_history"] = all((ai_data / path).read_bytes() == content
                                                                          for path, content in ai_original.items())
-            (root / "verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            (root / "artifacts/verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             assert all(value is True for key, value in report.items() if key != "installer"), report
         finally:
             if installed and (target / "unins000.exe").exists():
@@ -198,7 +202,7 @@ def main():
     if args.isolated_registration:
         report["existing_installation_preserved"] = uninstall_entry() == original_installation
         assert report["existing_installation_preserved"]
-    (root / "verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (root / "artifacts/verification/installer-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
 
 

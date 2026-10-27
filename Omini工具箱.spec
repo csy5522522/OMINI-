@@ -4,17 +4,18 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(SPECPATH)))
+sys.path.insert(0, str(Path(SPECPATH) / 'src'))
 from release_packaging import EXCLUDED_QT_FRONTENDS, keep_resource
 
 a = Analysis(
-    ['app.py'],
-    pathex=[],
+    ['src/app.py'],
+    pathex=[str(Path(SPECPATH)), str(Path(SPECPATH) / 'src')],
     binaries=[],
     datas=[('assets', 'assets'), ('web', 'web')],
     hiddenimports=['socks', 'web_server'],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['runtime_hook.py'],
+    runtime_hooks=['src/runtime_hook.py'],
     excludes=EXCLUDED_QT_FRONTENDS,
     noarchive=False,
     optimize=0,

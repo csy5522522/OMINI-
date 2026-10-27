@@ -12,7 +12,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-DEST = ROOT / "verification/account-sync"
+DEST = ROOT / "artifacts/verification/account-sync"
 
 
 def atomic(path, data):
@@ -324,7 +324,7 @@ def main():
             assert not isolated["memos"]
             native_a.send("login", {"email": user["email"]}); native_a.send("sync")
             report["checks"].append("Switching accounts isolates native timetable, Codex credentials, memos and sync baselines")
-            native_a.send("screenshot", {"page": 6, "path": str(DEST / "desktop-pool.png")})
+            native_a.send("screenshot", {"page": 5, "path": str(DEST / "desktop-pool.png")})
             native_a.send("screenshot", {"page": 4, "components": True, "path": str(DEST / "desktop-components.png")})
             report["screenshots"].extend([str(DEST / "desktop-pool.png"), str(DEST / "desktop-components.png")])
             native_b.close(); agents.remove(native_b)

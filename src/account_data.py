@@ -63,7 +63,7 @@ def validate_resource(name, value):
         # Read old account documents without resurrecting retired features.
         if "features" in value and isinstance(value["features"], dict):
             value = {**value, "features": {k: v for k, v in value["features"].items()
-                                           if k not in {"brightdata", "omini_api"}}}
+                                           if k not in {"brightdata", "omini_api", "sync", "more"}}}
         validate_features(value.get("features", {}), DESKTOP_FEATURES)
     elif name == "schedule":
         if set(value) - {"schedule", "first_monday", "selected_week"}:

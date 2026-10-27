@@ -5,6 +5,7 @@ WORKDIR /app
 COPY requirements-web.txt ./
 RUN pip install --no-cache-dir -r requirements-web.txt
 COPY *.py ./
+COPY src ./src
 COPY web ./web
 COPY assets ./assets
 RUN useradd --create-home --uid 10001 omini && mkdir /data && chown omini:omini /data

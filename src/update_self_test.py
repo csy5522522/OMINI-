@@ -99,7 +99,6 @@ def run_update_test(app_module):
                 report["minimum_screenshot"] = window.grab().save(str(path.with_name(path.stem + "-minimum.png")))
             page.install_button.click()
             wait_for(lambda: window.pending_update is not None and not window.isVisible())
-            wait_for(lambda: not window.sync_page.worker.isRunning())
             report["verified_install_handoff"] = window.pending_update.sha256 == digest
             report["shutdown_before_installer"] = True
     except Exception as error:
@@ -112,8 +111,6 @@ def run_update_test(app_module):
             worker = window.settings_page.updates.worker
             if worker:
                 worker.wait(30000)
-            window.sync_page.stop()
-            window.sync_page.worker.wait(20000)
             window.close()
             qt.processEvents()
         updater_page.GitHubUpdater = original_client

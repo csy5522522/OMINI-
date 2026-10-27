@@ -1,4 +1,4 @@
-"""Isolated account/feature checks for source and the frozen Windows application."""
+"""Isolated account/settings checks for source and the frozen Windows application."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,7 @@ def run_settings_test(app_module):
     window = None
     patches = []
     qt = QApplication.instance() or QApplication([])
-    destination = Path.cwd() / "verification"
+    destination = Path.cwd() / "artifacts/verification"
     destination.mkdir(exist_ok=True)
 
     def until(predicate, message, timeout=15):
@@ -44,24 +44,18 @@ def run_settings_test(app_module):
             app_module.save_json(app_module.SETTINGS_FILE,
                                  {"features": dict.fromkeys(DESKTOP_FEATURES, False), "last_page": 8})
             window = app_module.MainWindow(); window.show()
-            assert window.nav.currentRow() == 4
-            assert window.ai_assistants_page is None and window.sync_page is None
-            assert all(window.nav.item(index).isHidden() for index in range(window.nav.count()) if index != 4)
-            report["disabled_startup"] = True
-            checks = window.settings_page.feature_checks
-            checks["notes"].setChecked(True)
-            with patch.object(app_module.QMessageBox, "information"): window.settings_page.save()
+            assert window.nav.count() == 6 and window.ai_assistants_page is not None
+            assert not hasattr(window, "sync_page")
+            assert all(not window.nav.item(index).isHidden() for index in range(window.nav.count()))
+            report["fixed_tools_and_retired_navigation"] = True
             page = window.notes_page
-            file = page.store.create("功能开关验证", "initial")
-            page.refresh_files(file.name); page.editor.setPlainText("关闭功能后保留笔记")
-            checks["notes"].setChecked(False)
+            file = page.store.create("设置保存验证", "initial")
+            page.refresh_files(file.name); page.editor.setPlainText("保存设置后保留笔记")
+            window.settings_page.theme.setCurrentText("浅色")
             with patch.object(app_module.QMessageBox, "information"): window.settings_page.save()
-            assert window.notes_page is None
-            assert read_text_file(file)[0] == "关闭功能后保留笔记"
-            checks["notes"].setChecked(True)
-            with patch.object(app_module.QMessageBox, "information"): window.settings_page.save()
-            assert window.notes_page.editor.toPlainText() == "关闭功能后保留笔记"
-            report["feature_reload_preserves_data"] = True
+            assert window.notes_page is page and page.flush()
+            assert read_text_file(file)[0] == "保存设置后保留笔记"
+            report["settings_save_preserves_notes"] = True
 
             panel = window.settings_page.account
             with socket.socket() as listener:
@@ -76,6 +70,15 @@ def run_settings_test(app_module):
                 http.trust_env = False
                 for path in ("/", "/app.js", "/style.css", "/favicon.ico"):
                     assert http.get(panel.url + path, timeout=5).status_code == 200, path
+            window.open_account(); qt.processEvents()
+            assert panel.login_button.isVisible() and not panel.register_button.isVisible()
+            assert not panel.confirm.isVisible()
+            assert window.grab().save(str(destination / "settings-login.png"))
+            panel.auth_tabs.setCurrentIndex(1); qt.processEvents()
+            assert not panel.login_button.isVisible() and panel.register_button.isVisible()
+            assert panel.confirm.isVisible()
+            assert window.grab().save(str(destination / "settings-register.png"))
+            report["separate_login_registration"] = True
             panel.email.setText("frozen-check@example.test")
             panel.password.setText("FixturePassword-123"); panel.confirm.setText("FixturePassword-123")
             panel.register_button.click(); until(lambda: panel.worker is None, "Registration did not finish")
@@ -86,7 +89,7 @@ def run_settings_test(app_module):
             report["bundled_web_and_registration"] = True
             page = window.notes_page
             until(lambda: page.worker is None and page.context is not None, "Memo account did not become ready")
-            assert any(memo["content"] == "关闭功能后保留笔记" for memo in AccountClient(panel.url, panel.token).api("/api/memos")["memos"])
+            assert any(memo["content"] == "保存设置后保留笔记" for memo in AccountClient(panel.url, panel.token).api("/api/memos")["memos"])
             report["local_notes_auto_imported"] = True
             memo_file = page.store.create("超级备忘录验收", "桌面第一版")
             page.refresh_files(memo_file.name)
@@ -103,10 +106,20 @@ def run_settings_test(app_module):
             assert "omini-asset://" in memo["content"] and memo["version"] == 2
             updated = api_client.api("/api/memos", {**memo, "content": memo["content"] + "\n网页补充", "base_version": memo["version"]})["memo"]
             page.sync_now(); until(lambda: page.worker is None, "Memo download timed out")
+            assert "网页补充" not in page.editor.toPlainText()
+            assert page.editor.isEnabled() and not page.editor.isReadOnly()
+            other_file = next(path for path in page.store.files() if path != memo_file)
+            page.refresh_files(other_file.name)
+            page.sync_now(); until(lambda: page.worker is None, "Deferred memo download timed out")
+            page.refresh_files(memo_file.name)
             assert "网页补充" in page.editor.toPlainText()
             restored = api_client.api(f"/api/memos/{memo['id']}/restore", {"version": 2, "base_version": updated["version"]})["memo"]
             page.sync_now(); until(lambda: page.worker is None, "Memo rollback download timed out")
+            page.refresh_files(other_file.name)
+            page.sync_now(); until(lambda: page.worker is None, "Deferred rollback download timed out")
+            page.refresh_files(memo_file.name)
             assert "网页补充" not in page.editor.toPlainText()
+            report["background_sync_keeps_editor_active"] = True
             assert len(api_client.api(f"/api/memos/{memo['id']}/history")["versions"]) == 4
             report["memo_images_sync_and_rollback"] = True
             window.nav.setCurrentRow(3); qt.processEvents()
@@ -119,7 +132,7 @@ def run_settings_test(app_module):
             assert not AccountClient(panel.url, token).request("session")["authenticated"]
             assert not panel.store.path.exists()
             until(lambda: page.worker is None and page.context is None, "Memo logout did not restore local workspace")
-            assert read_text_file(file)[0] == "关闭功能后保留笔记"
+            assert read_text_file(file)[0] == "保存设置后保留笔记"
             report["durable_session_and_logout"] = True
             window.settings["theme"] = "浅色"; window.apply_theme(); window.open_account()
             qt.processEvents()

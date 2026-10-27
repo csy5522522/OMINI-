@@ -84,7 +84,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(network.decode_portal_content(message.encode("gbk"), "gbk"), message)
 
     def test_rsa_matches_actual_portal_javascript(self):
-        source = Path("verification/portal-security.js").read_text(encoding="utf-8")
+        source = Path("tests/fixtures/portal-security.js").read_text(encoding="utf-8")
         engine = QJSEngine()
         engine.evaluate("var window = this;")
         result = engine.evaluate(source)
@@ -211,7 +211,7 @@ class CampusUiTest(unittest.TestCase):
                     page.wifi_auto.setChecked(True); page.interval_enabled.setChecked(True)
                     page.log.clear(); page.append_log("配置示例：填写账号和密码后保存，即可启用自动登录。")
                     QTest.qWait(100)
-                    window.grab().save(str(Path(f"verification/campus-{app.APP_VERSION}.png").resolve()))
+                    window.grab().save(str(Path(f"artifacts/verification/campus-{app.APP_VERSION}.png").resolve()))
                     # Hiding the last window must preserve polling; tray quit must
                     # explicitly stop QApplication even when the window is hidden.
                     page.config["background"] = True

@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QProcess, QProcessEnvironment, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
-                              QLabel, QLineEdit, QPushButton, QWidget)
+                              QLabel, QLineEdit, QPushButton, QTabWidget, QWidget)
 
 from account_client import AccountClient, DesktopSession, service_url, DEFAULT_SERVICE
 from accounts import normalize_email, validate_password
@@ -37,7 +37,7 @@ class AccountPanel(QGroupBox):
     account_changed = Signal(object)
 
     def __init__(self, root, settings, save_settings, parent=None):
-        super().__init__("邮箱账号与网页端", parent)
+        super().__init__("账号与同步", parent)
         self.root, self.settings, self.save_settings = Path(root), settings, save_settings
         self.store = DesktopSession(self.root / "account-session.bin")
         self.url = settings.get("account_server", DEFAULT_SERVICE)
@@ -70,30 +70,46 @@ class AccountPanel(QGroupBox):
         self.cloud_button = QPushButton("连接官方云端"); self.cloud_button.clicked.connect(self.use_cloud)
         for button in (self.cloud_button, self.start_button, self.open_button, self.stop_button): buttons.addWidget(button)
         form.addRow(row)
-        self.email = QLineEdit(); self.email.setPlaceholderText("name@example.com")
-        self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password.setPlaceholderText("8 至 128 个字符")
+        self.auth_tabs = QTabWidget()
+        self.login_form = QWidget(); login_layout = QFormLayout(self.login_form)
+        self.register_form = QWidget(); register_layout = QFormLayout(self.register_form)
+        self.login_email = QLineEdit(); self.login_email.setPlaceholderText("name@example.com")
+        self.login_password = QLineEdit(); self.login_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.login_password.setPlaceholderText("输入登录密码")
+        self.register_email = QLineEdit(); self.register_email.setPlaceholderText("name@example.com")
+        self.register_password = QLineEdit(); self.register_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.register_password.setPlaceholderText("8 至 128 个字符")
         self.confirm = QLineEdit(); self.confirm.setEchoMode(QLineEdit.EchoMode.Password)
         self.confirm.setPlaceholderText("注册时再次输入密码")
         self.access_password = QLineEdit(); self.access_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.access_password.setPlaceholderText("服务设置了访问密码时，注册需填写；本机默认留空")
-        for label, field in (("邮箱", self.email), ("密码", self.password), ("确认密码（注册）", self.confirm),
-                             ("服务访问密码（注册）", self.access_password)):
-            form.addRow(label, field)
+        login_layout.addRow("邮箱", self.login_email)
+        login_layout.addRow("密码", self.login_password)
+        for label, field in (("邮箱", self.register_email), ("设置密码", self.register_password),
+                             ("确认密码", self.confirm), ("服务访问密码", self.access_password)):
+            register_layout.addRow(label, field)
+        self.login_button = QPushButton("登录"); self.login_button.setObjectName("primary")
+        self.register_button = QPushButton("创建账号"); self.register_button.setObjectName("primary")
+        self.login_button.clicked.connect(lambda: self.request("login"))
+        self.register_button.clicked.connect(lambda: self.request("register"))
+        self.login_password.returnPressed.connect(self.login_button.click)
+        self.confirm.returnPressed.connect(self.register_button.click)
+        login_layout.addRow(self.login_button)
+        register_layout.addRow(self.register_button)
+        self.auth_tabs.addTab(self.login_form, "登录")
+        self.auth_tabs.addTab(self.register_form, "注册")
+        self.auth_tabs.currentChanged.connect(self.auth_mode_changed)
+        form.addRow(self.auth_tabs)
         self.remember = QCheckBox("使用 Windows 本机加密记住登录状态")
         self.remember.setChecked(settings.get("account_remember", True)); form.addRow(self.remember)
         row = QWidget(); buttons = QHBoxLayout(row); buttons.setContentsMargins(0, 0, 0, 0)
-        self.login_button = QPushButton("邮箱登录"); self.login_button.setObjectName("primary")
-        self.register_button = QPushButton("邮箱注册")
         self.logout_button = QPushButton("退出登录")
         self.check_button = QPushButton("检查登录状态")
-        self.login_button.clicked.connect(lambda: self.request("login"))
-        self.register_button.clicked.connect(lambda: self.request("register"))
         self.logout_button.clicked.connect(lambda: self.request("logout"))
         self.check_button.clicked.connect(lambda: self.request("session"))
-        for button in (self.login_button, self.register_button, self.logout_button, self.check_button): buttons.addWidget(button)
+        for button in (self.logout_button, self.check_button): buttons.addWidget(button)
         form.addRow(row)
-        self.status = QLabel("使用邮箱注册或登录，在电脑与网页间同步超级备忘录。也可设置本机服务地址。")
+        self.status = QLabel("登录后在电脑与网页间同步账号数据。新用户可切换到「注册」创建账号。")
         self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText)
         form.addRow(self.status)
         sync_row = QWidget(); sync_buttons = QHBoxLayout(sync_row); sync_buttons.setContentsMargins(0, 0, 0, 0)
@@ -108,6 +124,20 @@ class AccountPanel(QGroupBox):
         self.set_busy(False)
         if self.token: QTimer.singleShot(0, lambda: self.request("session"))
         elif self.user: self.status.setText("登录已过期，本机账号工作区和未同步编辑均已保留；请重新登录以继续同步。")
+
+    @property
+    def email(self):
+        return self.register_email if self.auth_tabs.currentIndex() == 1 else self.login_email
+
+    @property
+    def password(self):
+        return self.register_password if self.auth_tabs.currentIndex() == 1 else self.login_password
+
+    def auth_mode_changed(self, index):
+        source = self.login_email if index == 1 else self.register_email
+        self.email.setText(source.text())
+        self.login_password.clear(); self.register_password.clear()
+        self.confirm.clear(); self.access_password.clear()
 
     def selected_url(self):
         url = service_url(self.address.text())
@@ -124,7 +154,8 @@ class AccountPanel(QGroupBox):
         return url
 
     def set_busy(self, busy):
-        for field in (self.address, self.email, self.password, self.confirm, self.access_password, self.remember):
+        for field in (self.address, self.auth_tabs, self.login_email, self.login_password,
+                      self.register_email, self.register_password, self.confirm, self.access_password, self.remember):
             field.setEnabled(not busy)
         for button in (self.login_button, self.register_button, self.check_button, self.cloud_button): button.setEnabled(not busy)
         self.logout_button.setEnabled(not busy and bool(self.token or self.user))
@@ -137,10 +168,12 @@ class AccountPanel(QGroupBox):
             url = self.selected_url()
             value = None if action == "session" else {}
             if action in {"login", "register"}:
-                value = {"email": normalize_email(self.email.text()), "password": validate_password(self.password.text()),
+                email = self.register_email if action == "register" else self.login_email
+                password = self.register_password if action == "register" else self.login_password
+                value = {"email": normalize_email(email.text()), "password": validate_password(password.text()),
                          "remember": self.remember.isChecked()}
                 if action == "register":
-                    if self.password.text() != self.confirm.text():
+                    if password.text() != self.confirm.text():
                         raise ValueError("两次输入的密码不一致。")
                     value["access_password"] = self.access_password.text()
             self.worker = AccountWorker(url, self.token, action, value, self, remember=self.remember.isChecked())
@@ -156,7 +189,7 @@ class AccountPanel(QGroupBox):
         result = worker.result
         action = worker.action
         worker.deleteLater(); self.worker = None
-        self.password.clear(); self.confirm.clear(); self.access_password.clear()
+        self.login_password.clear(); self.register_password.clear(); self.confirm.clear(); self.access_password.clear()
         if self.stopping: return
         if "error" in result:
             self.status.setText(result["error"])
@@ -169,6 +202,8 @@ class AccountPanel(QGroupBox):
                 self.user = cached_user
             if action == "logout":
                 self.user = None
+            if action in {"register", "logout"}:
+                self.auth_tabs.setCurrentIndex(0)
             self.status.setText("已登录：" + self.user["email"] if self.user else
                                 "已通过服务访问密码登录。" if data.get("authenticated") else "已退出登录。" if action == "logout" else "尚未登录，请使用邮箱注册或登录。")
             if self.user and not self.token:

@@ -54,9 +54,11 @@ class LocalFfmpegTest(unittest.TestCase):
     def test_release_excludes_ffmpeg_browser_and_keeps_download_tools(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'source'; destination = root/'release'; source.mkdir(); destination.mkdir()
-            for name in ('ffmpeg.exe', 'ffmpeg-release.json', 'ffprobe.exe', 'ffplay.exe', 'yt-dlp.exe'):
+            for name in ('ffmpeg.exe', 'ffmpeg-release.json', 'ffprobe.exe', 'ffplay.exe',
+                         'syncthing.exe', 'syncthing-LICENSE.txt', 'yt-dlp.exe'):
                 (source/name).write_bytes(b'fixture')
             (destination/'ffmpeg.exe').write_bytes(b'old stale copy')
+            (destination/'syncthing.exe').write_bytes(b'retired engine')
             copy_release_tools(source, destination)
             self.assertEqual([p.name for p in destination.iterdir()], ['yt-dlp.exe'])
         for name in ('PySide6/Qt6WebEngineCore.dll', 'PySide6/QtWebEngineWidgets.pyd', 'PySide6/resources/icudtl.dat',

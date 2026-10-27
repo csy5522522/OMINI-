@@ -24,10 +24,9 @@ function Copy-CommandBinary {
 }
 
 Invoke-Python @('-m', 'pip', 'install', '-r', 'requirements.txt')
-Invoke-Python @('scripts/fetch_syncthing.py')
 Invoke-Python @('scripts/fetch_cliproxyapi.py')
-Remove-Item -LiteralPath 'build' -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath 'dist' -Recurse -Force -ErrorAction SilentlyContinue
+$engineBuildRoot = Join-Path $root '.cache/engine-build'
+New-Item -ItemType Directory -Path $engineBuildRoot -Force | Out-Null
 New-Item -ItemType Directory -Path 'tools' -Force | Out-Null
 
 Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile 'tools/yt-dlp.exe'
@@ -38,18 +37,15 @@ Copy-CommandBinary 'aria2c.exe' 'tools/aria2c.exe'
 @'
 from gallery_dl import main
 main()
-'@ | Set-Content -LiteralPath 'gallery_dl_runner.py' -Encoding utf8
+'@ | Set-Content -LiteralPath (Join-Path $engineBuildRoot 'gallery_dl_runner.py') -Encoding utf8
 @'
 from spotdl.console.entry_point import console_entry_point
 console_entry_point()
-'@ | Set-Content -LiteralPath 'spotdl_runner.py' -Encoding utf8
-Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--name', 'gallery-dl', 'gallery_dl_runner.py')
-Move-Item -LiteralPath 'dist/gallery-dl.exe' -Destination 'tools/gallery-dl.exe' -Force
-Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--collect-data', 'pykakasi', '--name', 'spotdl', 'spotdl_runner.py')
-Move-Item -LiteralPath 'dist/spotdl.exe' -Destination 'tools/spotdl.exe' -Force
-Remove-Item -LiteralPath 'gallery_dl_runner.py','spotdl_runner.py' -Force
+'@ | Set-Content -LiteralPath (Join-Path $engineBuildRoot 'spotdl_runner.py') -Encoding utf8
+Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--distpath', (Join-Path $engineBuildRoot 'dist'), '--workpath', (Join-Path $engineBuildRoot 'build'), '--specpath', $engineBuildRoot, '--name', 'gallery-dl', (Join-Path $engineBuildRoot 'gallery_dl_runner.py'))
+Copy-Item -LiteralPath (Join-Path $engineBuildRoot 'dist/gallery-dl.exe') -Destination 'tools/gallery-dl.exe' -Force
+Invoke-Python @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--collect-data', 'pykakasi', '--distpath', (Join-Path $engineBuildRoot 'dist'), '--workpath', (Join-Path $engineBuildRoot 'build'), '--specpath', $engineBuildRoot, '--name', 'spotdl', (Join-Path $engineBuildRoot 'spotdl_runner.py'))
+Copy-Item -LiteralPath (Join-Path $engineBuildRoot 'dist/spotdl.exe') -Destination 'tools/spotdl.exe' -Force
 
-Invoke-Python @('-m', 'PyInstaller', '--noconfirm', ($appName + '.spec'))
-$releaseDirectory = Join-Path 'dist' $appName
-Invoke-Python @('release_packaging.py', '--copy-tools', (Join-Path $releaseDirectory 'tools'))
-Write-Host "Built: $(Join-Path $root (Join-Path $releaseDirectory ($appName + '.exe')))"
+& (Join-Path $root 'scripts/build_release.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Application build failed.' }

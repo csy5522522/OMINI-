@@ -2,6 +2,8 @@
 !Dockerfile
 !requirements-web.txt
 !*.py
+!src/
+!src/**
 !web/
 !web/**
 !assets/

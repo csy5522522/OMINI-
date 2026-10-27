@@ -33,6 +33,7 @@ def main():
     release = args.release.resolve()
     executable = release / 'Omini工具箱.exe'
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from local_ffmpeg import resolve_ffmpeg
     ffmpeg = resolve_ffmpeg(str(args.ffmpeg or ''), [release / 'tools', Path(__file__).resolve().parents[1] / 'tools'])
     report = {'ok': False, 'release': str(release)}
@@ -48,11 +49,12 @@ def main():
         assert not (release / '_internal/PySide6/Qt6Quick.dll').exists()
         assert not (release / '_internal/PySide6/Qt6Qml.dll').exists()
         forbidden = [p for p in release.rglob('*') if 'webengine' in p.name.lower()
-                     or p.name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay'))]
+                     or p.name.lower().startswith(('ffmpeg', 'ffprobe', 'ffplay', 'syncthing'))]
         assert not forbidden, forbidden
         from PyInstaller.archive.readers import CArchiveReader
         modules = CArchiveReader(str(executable)).open_embedded_archive('PYZ.pyz').toc
         assert not any(name == 'omini_api' or name.startswith(('omini_api.', 'omini_api_', 'brightdata')) for name in modules)
+        assert not {'folder_sync', 'folder_sync_page', 'tailscale_sync', 'sync_self_test'} & modules.keys()
         checks = {'no_embedded_browser_or_ffmpeg': True, 'retired_modules_removed': True}
         for name in (() if args.skip_ui else ('ai-assistants', 'timetable', 'notes')):
             target = root / f'{name}.json'

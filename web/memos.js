@@ -4,7 +4,7 @@ let memoImagePoint=null;
 const memoAssets=new Map(),memoEl=id=>document.getElementById(id);
 const memoEditor=OminiMemoEditor.create(memoEl('memo-content'),{
   loadAsset:memoAsset,onChange:editedMemo,onImage:insertMemoImage,
-  onComposition(value){memoComposing=value;if(value)clearTimeout(memoTimer);else if(memoDirty)memoTimer=setTimeout(saveMemo,900);}
+  onComposition(value){memoComposing=value;if(value)clearTimeout(memoTimer);else if(memoDirty)memoTimer=setTimeout(saveMemo,20000);}
 });
 function memoStatus(text,state='saved'){
   memoEl('memo-status').textContent=text;memoEl('memo-status').title=text;
@@ -112,7 +112,7 @@ async function loadMemos(force=false){
       else{memoNotice('已恢复上次未保存的草稿，可继续编辑或点击重试保存。',false,true);memoStatus('本机草稿待保存','editing');}
     }else if(memoCurrent){
       const current=memos.find(m=>m.id===memoCurrent.id);
-      if(current&&current.version!==memoCurrent.version){
+      if(current&&current.version!==memoCurrent.version&&!memoEl('memo-workbench').classList.contains('show-document')){
         const scroll=document.querySelector('.memo-document-scroll').scrollTop,selection=memoEditor.view.state.selection;
         const wasOpen=memoEl('memo-workbench').classList.contains('show-document');showMemo(current,wasOpen);
         memoEditor.restoreSelection(selection.from,selection.to);document.querySelector('.memo-document-scroll').scrollTop=scroll;
@@ -125,21 +125,23 @@ async function loadMemos(force=false){
 function editedMemo(){
   if(!memoCurrent||memoCurrent.deleted)return;
   memoDirty=true;persistMemoDraft();clearTimeout(memoTimer);memoStatus('正在编辑 · 自动保存','editing');
-  if(!memoComposing&&!memoEditor.isComposing())memoTimer=setTimeout(saveMemo,900);
+  if(!memoComposing&&!memoEditor.isComposing())memoTimer=setTimeout(saveMemo,20000);
 }
 async function saveMemo(){
-  if(memoComposing||memoEditor.isComposing()){clearTimeout(memoTimer);memoTimer=setTimeout(saveMemo,900);return false;}
+  if(memoComposing||memoEditor.isComposing()){clearTimeout(memoTimer);memoTimer=setTimeout(saveMemo,20000);return false;}
   if(!memoCurrent||!memoDirty)return true;if(memoBusy)return false;
   clearTimeout(memoTimer);memoBusy=true;updateMemoRefresh();const generation=authGeneration,operation=++memoOperation;
   const current={...memoCurrent,title:memoEl('memo-title').value,content:memoEditor.getContent()};
-  memoStatus('正在保存…','saving');
+  memoStatus('本机加密缓存 · 后台推送中','saving');
   try{
+    await persistMemoDraft(current);
+    if(generation!==authGeneration)return false;
     const result=await api('/api/memos',{id:current.id,title:current.title,content:current.content,deleted:Boolean(current.deleted),base_version:current.version});
     if(generation!==authGeneration||memoCurrent?.id!==current.id)return false;
     memoCurrent=result.memo;memos=[result.memo,...memos.filter(m=>m.id!==result.memo.id)];
     if(memoEl('memo-title').value===current.title&&memoEditor.getContent()===current.content){
       memoDirty=false;persistMemoDraft(null);memoNotice();memoStatus(`已同步 · ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`);
-    }else{persistMemoDraft();memoTimer=setTimeout(saveMemo,900);memoStatus('正在编辑 · 自动保存','editing');}
+    }else{persistMemoDraft();memoTimer=setTimeout(saveMemo,20000);memoStatus('正在编辑 · 自动保存','editing');}
     renderMemoList();return !memoDirty;
   }catch(error){
     if(generation===authGeneration){persistMemoDraft();memoStatus(error.status===409?'存在版本冲突':'草稿已保留在本机','error');memoNotice(error.status===409?'云端已有更新，你的编辑已保留。请保存冲突副本。':`${error.message} 编辑已暂存在本机，请稍后重试。`,error.status===409,error.status!==409);}
@@ -192,7 +194,7 @@ memoEl('memo-search').addEventListener('input',renderMemoList);
 memoEl('memo-active').addEventListener('click',()=>switchMemoFolder(false));memoEl('memo-trash').addEventListener('click',()=>switchMemoFolder(true));
 memoEl('memo-title').addEventListener('input',editedMemo);
 memoEl('memo-title').addEventListener('compositionstart',()=>{memoComposing=true;clearTimeout(memoTimer);});
-memoEl('memo-title').addEventListener('compositionend',()=>{memoComposing=false;if(memoDirty)memoTimer=setTimeout(saveMemo,900);});
+memoEl('memo-title').addEventListener('compositionend',()=>{memoComposing=false;if(memoDirty)memoTimer=setTimeout(saveMemo,20000);});
 for(const id of ['memo-save','memo-retry'])memoEl(id).addEventListener('click',()=>{closeMemoMenu();saveMemo();});
 for(const id of ['memo-new','memo-empty-new'])memoEl(id).addEventListener('click',newMemo);
 memoEl('memo-refresh').addEventListener('click',async()=>{

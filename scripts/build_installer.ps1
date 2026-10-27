@@ -14,13 +14,10 @@ if ($Version -ne $sourceVersion) { throw 'Installer version must match app_versi
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must have three numeric components.' }
 $releasePath = $ReleaseDir
 if (-not $releasePath) {
-    $releasePath = Join-Path $installerRoot ("dist-sync-$Version/Omini工具箱")
-    if (-not (Test-Path -LiteralPath $releasePath)) {
-        $releasePath = Join-Path $installerRoot 'dist/Omini工具箱'
-    }
+    $releasePath = Join-Path $installerRoot ("artifacts/releases/$Version/Omini工具箱")
 }
 $releasePath = [System.IO.Path]::GetFullPath($releasePath)
-if (-not (Test-Path -LiteralPath (Join-Path $releasePath 'tools/syncthing.exe'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $releasePath 'tools/cli-proxy-api.exe'))) {
     throw "Complete release is missing: $releasePath"
 }
 if (-not $Compiler) {
@@ -36,7 +33,7 @@ if (-not $Compiler) {
 if (-not $Compiler) { throw 'Install Inno Setup 6.7.3+ or pass -Compiler with the path to ISCC.exe.' }
 & $Compiler '/Qp' "/DAppVersion=$Version" "/DReleaseDir=$releasePath" (Join-Path $installerRoot 'installer/OminiToolbox.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-$setupFile = Join-Path $installerRoot "dist-installer-$Version/Omini工具箱-$Version-Setup.exe"
+$setupFile = Join-Path $installerRoot "artifacts/installers/$Version/Omini工具箱-$Version-Setup.exe"
 $checksum = Get-FileHash -LiteralPath $setupFile -Algorithm SHA256
 $checksum.Hash.ToLower() + '  ' + (Split-Path -Leaf $setupFile) | Set-Content -LiteralPath ($setupFile + '.sha256') -Encoding utf8
 Write-Output "Installer ready: $setupFile"

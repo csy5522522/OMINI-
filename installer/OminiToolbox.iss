@@ -3,7 +3,7 @@
   #error Build with scripts/build_installer.ps1 to supply the application version.
 #endif
 #ifndef ReleaseDir
-  #define ReleaseDir "..\dist-sync-" + AppVersion + "\Omini工具箱"
+  #define ReleaseDir "..\artifacts\releases\" + AppVersion + "\Omini工具箱"
 #endif
 
 [Setup]
@@ -20,7 +20,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-OutputDir=..\dist-installer-{#AppVersion}
+OutputDir=..\artifacts\installers\{#AppVersion}
 OutputBaseFilename=Omini工具箱-{#AppVersion}-Setup
 SetupIconFile=..\assets\omini_icon.ico
 UninstallDisplayIcon={app}\Omini工具箱.exe
@@ -52,6 +52,8 @@ Source: "安装版使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Remove obsolete application runtimes on upgrade. User data is under APPDATA.
 [InstallDelete]
+Type: files; Name: "{app}\tools\syncthing*"
+Type: files; Name: "{app}\文件夹同步使用说明.txt"
 Type: filesandordirs; Name: "{app}\_internal\omini_api"
 Type: files; Name: "{app}\_internal\omini_api*.py*"
 Type: files; Name: "{app}\_internal\brightdata*.py*"
@@ -103,7 +105,7 @@ procedure InitializeWizard;
 begin
   WizardForm.WelcomeLabel2.Caption := '此向导将把 Omini工具箱安装到您的电脑。' + #13#10#13#10 +
     '您可以选择安装位置和桌面快捷方式。安装后可从开始菜单打开程序。' + #13#10#13#10 +
-    '文件夹同步支持 Tailscale、设备 ID 配对，以及手动、定时和自动同步。' + #13#10#13#10 +
+    '包含下载中心、校园网、学校课表、超级备忘录和 AI 配置中心。' + #13#10#13#10 +
     '可在设置中检查 GitHub 更新并下载安装。' + #13#10#13#10 +
-    '卸载会保留个人设置和已同步文件。';
+    '卸载会保留个人设置、备忘录和账号数据。';
 end;

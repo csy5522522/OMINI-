@@ -10,21 +10,22 @@ services:
       MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
     secrets: [mysql_password, mysql_root_password]
     volumes: [mysql_data:/var/lib/mysql]
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--max-allowed-packet=32M"]
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--max-allowed-packet=64M", "--disable-log-bin", "--innodb-buffer-pool-size=64M", "--innodb-redo-log-capacity=128M", "--innodb-buffer-pool-chunk-size=32M", "--performance-schema=OFF", "--max-connections=40", "--table-open-cache=256", "--table-definition-cache=512"]
     healthcheck:
       test: ["CMD-SHELL", "MYSQL_PWD=$$(cat /run/secrets/mysql_password) mysql -h 127.0.0.1 -u omini -D omini -e 'SELECT 1' >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 20
-    mem_limit: 768m
+    mem_limit: 384m
   web:
     build: ..
-    image: omini-toolbox:1.2.3
+    image: omini-toolbox:1.2.7
     restart: unless-stopped
     init: true
     ports: ["127.0.0.1:18765:18765"]
     environment:
-      OMINI_PUBLIC_ORIGIN: ${OMINI_PUBLIC_ORIGIN:-https://my.omini.cn}
+      OMINI_PUBLIC_ORIGIN: ${OMINI_PUBLIC_ORIGIN:-https://omini.xin}
+      OMINI_PUBLIC_ORIGINS: https://my.omini.xin
       OMINI_MYSQL_HOST: mysql
       OMINI_MYSQL_USER: omini
       OMINI_MYSQL_DATABASE: omini
@@ -40,7 +41,7 @@ services:
       interval: 20s
       timeout: 8s
       retries: 5
-    mem_limit: 768m
+    mem_limit: 384m
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
 secrets:

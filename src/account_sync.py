@@ -13,7 +13,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 
 from account_client import AccountClient
-from account_data import RESOURCES, merge_documents, validate_resource
+from account_data import merge_documents, validate_resource
 from ai_assistants import AssistantStore, atomic_json
 from assistant_data import (AssistantState, OperationHistory, backup_credentials,
                             read_protected, write_protected, settings_fingerprint)
@@ -110,11 +110,11 @@ class SyncWorker(QThread):
         try:
             client = AccountClient(self.url, self.token)
             from urllib.parse import quote
-            known = {name: item["revision"] for name, item in self.ack.items()}
-            remote = client.api("/api/sync?revisions=" + quote(json.dumps(known), safe=""))
+            known = {name: item["revision"] for name, item in self.ack.items() if name in self.snapshot}
+            remote = client.api("/api/sync?resources=" + ",".join(self.snapshot) + "&revisions=" + quote(json.dumps(known), safe=""))
             result = {}
             self.result = {"resources": result, "conflicts": remote.get("conflicts", [])}
-            for name in RESOURCES:
+            for name in self.snapshot:
                 if self.isInterruptionRequested(): return
                 previous = self.ack.get(name, {"revision": 0, "data": {}})
                 local = self.snapshot[name]
@@ -145,7 +145,7 @@ class DesktopAccountSync(QObject):
         self.timer.timeout.connect(self.sync_now)
         self.timer.start()
         self.panel.account_changed.connect(self.switch_account)
-        self.panel.sync_button.clicked.connect(self.sync_now)
+        self.panel.sync_button.clicked.connect(lambda: self.sync_now(include_assistants=True))
         self.panel.backups_button.clicked.connect(self.open_backups)
         if self.panel.user:
             window.update_account_label(self.panel.user)
@@ -155,17 +155,32 @@ class DesktopAccountSync(QObject):
         return any(getattr(getattr(self.window, name, None), "worker", None)
                    for name in ("ai_assistants_page", "timetable_page"))
 
-    def snapshot(self):
+    def snapshot(self, include_assistants=False):
         page = getattr(self.window, "ai_assistants_page", None)
-        if page and not page.save_session():
+        if include_assistants and page and not page.save_session():
             raise ValueError("助手配置保存未完成，请检查操作记录。")
         settings = self.window.settings
         timetable = self.root / "school-timetable.json"
         schedule = json.loads(timetable.read_text(encoding="utf-8")) if timetable.exists() else None
         monday = settings.get("school_timetable", {}).get("start_date", "")
         week = settings.get("school_timetable", {}).get("selected_week", 0)
-        return {"preferences": preferences(settings), "schedule": {"schedule": schedule, "first_monday": monday, "selected_week": week},
-                "assistants": read_assistants(self.root / "ai-assistants")}
+        result = {"preferences": preferences(settings), "schedule": {"schedule": schedule, "first_monday": monday, "selected_week": week}}
+        if include_assistants: result["assistants"] = read_assistants(self.root / "ai-assistants")
+        return result
+
+    def sync_ack(self, include_assistants=False):
+        path = self.root / "sync-auto.json"
+        if not path.exists():
+            legacy, _ = read_protected(self.root / "sync.json", {})
+            automatic = {name: value for name, value in legacy.items() if name in {"preferences", "schedule"}}
+            if "assistants" in legacy and not (self.root / "sync-assistants.json").exists():
+                write_protected(self.root / "sync-assistants.json", legacy["assistants"])
+            write_protected(path, automatic)
+        ack, _ = read_protected(path, {})
+        if include_assistants:
+            assistants, _ = read_protected(self.root / "sync-assistants.json", {})
+            if assistants: ack["assistants"] = assistants
+        return ack
 
     def persist(self):
         if self.context:
@@ -215,7 +230,7 @@ class DesktopAccountSync(QObject):
         self.refresh_settings()
         self.window.apply_features()
         self.window.apply_theme()
-        self.panel.sync_status.setText("正在同步账号工作区…" if context else "登录后自动同步课表、备忘录、偏好与 Codex 成员。")
+        self.panel.sync_status.setText("正在同步课表与设置…" if context else "登录后自动同步课表、备忘录与设置；AI 助手仅手动同步。")
         QTimer.singleShot(0, self.sync_now)
 
     def import_guest(self):
@@ -246,18 +261,18 @@ class DesktopAccountSync(QObject):
         page = self.window.settings_page
         page.theme.setCurrentText(self.window.settings.get("theme", "深色"))
 
-    def sync_now(self):
+    def sync_now(self, include_assistants=False):
         if self.stopping or not self.context or self.worker or self.busy(): return
         if not self.panel.token:
             self.panel.sync_status.setText("登录已过期，本机修改已保留；重新登录后继续同步。")
             return
         try:
-            snapshot = self.snapshot()
+            snapshot = self.snapshot(include_assistants)
             self.persist()
-            ack, _ = read_protected(self.root / "sync.json", {})
+            ack = self.sync_ack(include_assistants)
             self.worker = SyncWorker(self.panel.url, self.panel.token, snapshot, ack, self.generation, self)
             self.worker.finished.connect(self.finished)
-            self.panel.sync_status.setText("正在同步课表、偏好与 Codex 成员…")
+            self.panel.sync_status.setText("正在手动同步全部账号数据（含 AI 助手）…" if include_assistants else "正在同步课表与设置…")
             self.worker.start()
             notes = getattr(self.window, "notes_page", None)
             if notes: notes.sync_now()
@@ -281,9 +296,10 @@ class DesktopAccountSync(QObject):
             return
         if not worker.result: return
         try:
-            current = self.snapshot()
+            include_assistants = "assistants" in worker.snapshot
+            current = self.snapshot(include_assistants)
             applied = copy.deepcopy(current)
-            ack, _ = read_protected(self.root / "sync.json", {})
+            ack = self.sync_ack(include_assistants)
             conflicts = 0
             for name, result in worker.result["resources"].items():
                 ack[name] = {"revision": result["revision"], "data": result["data"]}
@@ -294,13 +310,14 @@ class DesktopAccountSync(QObject):
                     write_protected(self.root / "conflicts" / (result["conflict_id"] + ".json"),
                                     {"name": name, "data": worker.snapshot[name], "paths": result["conflicts"]})
             self.apply(applied, current)
-            write_protected(self.root / "sync.json", ack)
+            write_protected(self.root / "sync-auto.json", {k: v for k, v in ack.items() if k != "assistants"})
+            if "assistants" in ack: write_protected(self.root / "sync-assistants.json", ack["assistants"])
             self.persist()
-            count = len(applied["assistants"].get("members", {}))
-            self.panel.sync_status.setText(f"已同步 · {time.strftime('%H:%M:%S')} · {count} 个 Codex 成员" +
+            self.panel.sync_status.setText(f"已同步 · {time.strftime('%H:%M:%S')} · " +
+                ("AI 助手已手动同步" if include_assistants else "AI 助手仅手动同步") +
                 (f" · {conflicts} 项并发修改已保留加密备份" if conflicts else ""))
             if worker.error: self.panel.sync_status.setText("部分数据已同步，其余修改保留待重试 · " + worker.error)
-            elif any(applied[name] != ack.get(name, {}).get("data") for name in applied):
+            elif any(applied[name] != ack.get(name, {}).get("data") for name in applied if name != "assistants"):
                 self.panel.sync_status.setText("同步期间的新编辑已保存在本机，正在继续同步…")
                 QTimer.singleShot(500, self.sync_now)
         except (OSError, ValueError, RuntimeError) as error:
@@ -319,7 +336,7 @@ class DesktopAccountSync(QObject):
                 self.window.settings["school_timetable"]["selected_week"] = schedule["selected_week"]
             page = getattr(self.window, "timetable_page", None)
             if page: page.apply_cloud(schedule)
-        if value["assistants"] != before["assistants"]:
+        if "assistants" in value and value["assistants"] != before["assistants"]:
             write_assistants(self.root / "ai-assistants", value["assistants"])
             page = getattr(self.window, "ai_assistants_page", None)
             if page: page.apply_cloud()
@@ -341,7 +358,7 @@ class DesktopAccountSync(QObject):
         from ai_assistants import redact
         dialog = QDialog(self.window); dialog.setWindowTitle("同步冲突备份与恢复"); dialog.resize(700, 520)
         layout = QVBoxLayout(dialog)
-        note = QLabel("选择本机并发编辑备份，恢复冲突字段后会重新同步。其他设备的备份可在网页偏好设置中查看。")
+        note = QLabel("选择本机并发编辑备份，恢复冲突字段后会重新同步。课表和设置备份也可在网页设置中查看；助手备份请在客户端查看。")
         note.setWordWrap(True); layout.addWidget(note)
         choices = QComboBox(); layout.addWidget(choices)
         for file in sorted(path.glob("*.json"), reverse=True): choices.addItem(file.stem, file)
@@ -363,11 +380,11 @@ class DesktopAccountSync(QObject):
                 note.setText("当前后台操作正在完成，请稍后恢复。"); return
             try:
                 value, _ = read_protected(choices.currentData(), {})
-                before = self.snapshot(); restored = copy.deepcopy(before)
                 name = value["name"]
+                before = self.snapshot(include_assistants=name == "assistants"); restored = copy.deepcopy(before)
                 restored[name] = restore_conflict_fields(before[name], value["data"], value["paths"])
                 validate_resource(name, restored[name])
-                self.apply(restored, before); self.persist(); self.sync_now(); dialog.accept()
+                self.apply(restored, before); self.persist(); self.sync_now(include_assistants=name == "assistants"); dialog.accept()
             except (OSError, ValueError, KeyError, RuntimeError):
                 note.setText("备份恢复未完成，原文件和当前内容已保留。")
         choices.currentIndexChanged.connect(show); restore.clicked.connect(recover)

@@ -18,8 +18,9 @@ Object.assign(window,{console,indexedDB,TextEncoder,TextDecoder,matchMedia:()=>(
     if(body)writes.push({url,body});
     const response=value=>({ok:true,status:200,json:async()=>structuredClone(value)});
     if(url===blocked){blocked='';await new Promise(resolve=>{release=resolve;});}
+    if(url==='/api/announcements')return response({announcements:[]});
     if(url==='/api/auth/session')return response({authenticated:true,user:account});
-    if(url==='/api/state')return response({features:{timetable:true,notes:true,ai_assistants:true},version:'fixture'});
+    if(url==='/api/state')return response({features:{timetable:true,notes:true},version:'fixture'});
     if(url==='/api/timetable')return response({schedule:null,first_monday:'',selected_week:0});
     if(url.startsWith('/api/timetable/'))return response({schedule:privateSchedule,first_monday:'2026-10-19',revision:2});
     if(url.startsWith('/api/sync?'))return response({resources,conflicts:[]});

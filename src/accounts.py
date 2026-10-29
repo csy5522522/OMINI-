@@ -13,6 +13,14 @@ ITERATIONS = 600_000
 SESSION_SECONDS = 12 * 3600
 REMEMBERED_SESSION_SECONDS = 30 * 24 * 3600
 EMAIL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}\Z")
+SCHOOL_ACCOUNT_DOMAIN = '@hualixy.school.omini.invalid'
+
+
+def public_user(user):
+    user = dict(user)
+    if user['email'].endswith(SCHOOL_ACCOUNT_DOMAIN):
+        user.update(auth_provider='school', display_name='华立同学 · ' + user['email'].split('@')[0][-6:])
+    return user
 
 
 def normalize_email(value):
@@ -61,6 +69,7 @@ class AccountStore:
 
     def register(self, email, password):
         email, password = normalize_email(email), validate_password(password)
+        if email.endswith(SCHOOL_ACCOUNT_DOMAIN): raise ValueError("此账号类型请通过学校扫码登录创建。")
         user = {"id": secrets.token_hex(16), "email": email}
         salt = secrets.token_bytes(16)
         hashed = self.derive(password, salt)
@@ -76,6 +85,7 @@ class AccountStore:
 
     def login(self, email, password):
         email = "admin" if email == "admin" else normalize_email(email)
+        if email.endswith(SCHOOL_ACCOUNT_DOMAIN): raise ValueError("此账号请使用学校扫码登录。")
         password = validate_password(password)
         with self.connect() as db:
             row = db.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
@@ -89,7 +99,30 @@ class AccountStore:
         if profile and profile["disabled"]: raise ValueError("账号已停用，请联系管理员。")
         user = {"id": row["id"], "email": row["email"]}
         if profile and profile["role"] == "admin": user["role"] = "admin"
-        return user
+        return public_user(user)
+
+    def school_user(self, identity_hash):
+        """Only called with a server HMAC of the identity verified by school SSO."""
+        if not isinstance(identity_hash, str) or not re.fullmatch('[0-9a-f]{64}', identity_hash):
+            raise ValueError('学校身份信息有误，请重新扫码。')
+        email = identity_hash + SCHOOL_ACCOUNT_DOMAIN
+        with self.connect() as db:
+            row = db.execute('SELECT id, email FROM users WHERE email=?', (email,)).fetchone()
+        if row is None:
+            try:
+                with self.connect() as db:
+                    salt = secrets.token_bytes(16)
+                    db.execute('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)',
+                        (secrets.token_hex(16), email, salt, self.derive(secrets.token_urlsafe(48),salt), ITERATIONS,time.time()))
+            except Exception as error:
+                if not (isinstance(error,sqlite3.IntegrityError) or type(error).__name__=='IntegrityError'): raise
+            with self.connect() as db:
+                row = db.execute('SELECT id, email FROM users WHERE email=?', (email,)).fetchone()
+        if row is None: raise ValueError('学校账号创建失败，请稍后重试。')
+        with self.connect() as db:
+            profile = db.execute('SELECT role, disabled FROM account_profiles WHERE user_id=?',(row['id'],)).fetchone()
+        if profile and profile['disabled']: raise ValueError('账号已停用，请联系管理员。')
+        return public_user({'id':row['id'],'email':row['email']})
 
     def issue_session(self, user, *, remember=False):
         token = secrets.token_urlsafe(32)
@@ -120,7 +153,7 @@ class AccountStore:
                     "WHERE token_hash=? AND expires_at>?", (expires, expires, hashlib.sha256(token.encode()).hexdigest(), now))
         user = {"id": row["id"], "email": row["email"]}
         if row["role"] == "admin": user["role"] = "admin"
-        return user
+        return public_user(user)
 
     def revoke_session(self, token):
         with self.connect() as db:
@@ -142,11 +175,21 @@ class AccountStore:
                 "COALESCE(account_profiles.role, 'user') AS role, COALESCE(account_profiles.disabled, 0) AS disabled "
                 "FROM users LEFT JOIN account_profiles ON users.id=account_profiles.user_id ORDER BY users.created_at DESC").fetchall()]
 
-    def manage_user(self, user_id, *, disabled=None, password=None):
+    def manage_user(self, user_id, *, disabled=None, password=None, email=None):
+        if password is not None: validate_password(password)
+        if email is not None:
+            email = normalize_email(email)
+            if email.endswith(SCHOOL_ACCOUNT_DOMAIN): raise ValueError('此邮箱为学校账号保留。')
         with self.connect() as db:
-            row = db.execute("SELECT users.id, account_profiles.role FROM users LEFT JOIN account_profiles "
+            row = db.execute("SELECT users.id, users.email, account_profiles.role FROM users LEFT JOIN account_profiles "
                 "ON users.id=account_profiles.user_id WHERE users.id=?", (user_id,)).fetchone()
             if not row: raise ValueError("账号不存在。")
+            if email is not None:
+                if row['role'] == 'admin' or row['email'].endswith(SCHOOL_ACCOUNT_DOMAIN):
+                    raise ValueError('管理员和学校账号的登录标识保持固定。')
+                if db.execute('SELECT id FROM users WHERE email=? AND id<>?', (email, user_id)).fetchone():
+                    raise ValueError('该邮箱已注册。')
+                db.execute('UPDATE users SET email=? WHERE id=?', (email, user_id))
             if disabled is not None:
                 if type(disabled) is not bool: raise ValueError("账号状态有误。")
                 if row["role"] == "admin": raise ValueError("管理员账号请保留启用状态。")
@@ -158,3 +201,22 @@ class AccountStore:
                 db.execute("UPDATE users SET salt=?, password_hash=?, iterations=? WHERE id=?",
                            (salt, self.derive(password, salt), ITERATIONS, user_id))
             db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+    def delete_user(self, user_id):
+        with self.connect() as db:
+            row = db.execute('SELECT role FROM account_profiles WHERE user_id=?', (user_id,)).fetchone()
+            if row and row['role'] == 'admin': raise ValueError('请保留管理员账号。')
+            if not db.execute('SELECT id FROM users WHERE id=?', (user_id,)).fetchone():
+                raise ValueError('账号不存在。')
+            # Optional feature tables may not exist in standalone account stores.
+            tables = (db.execute('SHOW TABLES').fetchall() if self.database.mysql else
+                      db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())
+            names = {list(dict(t).values())[0] for t in tables}
+            for table in ('sessions', 'account_profiles', 'memos', 'memo_versions', 'memo_assets',
+                          'workspace_data', 'memo_operations', 'account_documents', 'account_document_versions',
+                          'account_sync_conflicts', 'account_member_deletions', 'chat_requests',
+                          'chat_conversations', 'chat_stream_requests'):
+                if table in names:
+                    column = 'owner' if table.startswith('account_') and table != 'account_profiles' else 'user_id'
+                    db.execute(f'DELETE FROM {table} WHERE {column}=?', (user_id,))
+            db.execute('DELETE FROM users WHERE id=?', (user_id,))

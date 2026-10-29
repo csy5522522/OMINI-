@@ -6,10 +6,11 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from account_client import AccountClient, DesktopSession
 from account_data import AccountDataStore, validate_resource
-from account_sync import SyncWorker, read_assistants, write_assistants, restore_conflict_fields
+from account_sync import DesktopAccountSync, SyncWorker, read_assistants, write_assistants, restore_conflict_fields
 from assistant_data import OperationHistory
 from database import Database
 import tests.test_memos as memo_fixtures
@@ -24,6 +25,44 @@ def schedule(title="Math"):
     return {"schema": 1, "year": "2026", "term": "3", "updated_at": "2026-10-22T10:00:00",
             "period_times": {}, "courses": [{"name": title, "weekday": 1, "periods": [1, 2], "weeks": [1, 2],
                 "teacher": "Teacher", "location": "A101", "week_text": "1-2", "campus": "", "credits": "", "class_name": ""}]}
+
+
+class AutomaticSyncTests(unittest.TestCase):
+    def test_automatic_snapshot_does_not_read_or_save_assistant_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            page = SimpleNamespace(save_session=lambda: self.fail("Automatic sync saved assistant state"))
+            state = SimpleNamespace(root=Path(temporary), window=SimpleNamespace(settings={}, ai_assistants_page=page))
+            with patch("account_sync.read_assistants", side_effect=AssertionError("History was read")):
+                self.assertEqual(set(DesktopAccountSync.snapshot(state)), {"preferences", "schedule"})
+            state.window.ai_assistants_page = None
+            with patch("account_sync.read_assistants", return_value={"members": {}}) as read:
+                self.assertIn("assistants", DesktopAccountSync.snapshot(state, include_assistants=True))
+                read.assert_called_once()
+
+    def test_worker_requests_only_its_snapshot_resources(self):
+        for resources in (("preferences", "schedule"), ("preferences", "schedule", "assistants")):
+            snapshot = {name: {"fixture": name} for name in resources}
+            ack = {name: {"revision": 2, "data": value} for name, value in snapshot.items()}
+            worker = SyncWorker("http://127.0.0.1:1", "fixture", snapshot, ack, 1)
+            with patch.object(AccountClient, "api", return_value={"resources": {name: {"unchanged": True} for name in resources}}) as api:
+                worker.run()
+            self.assertFalse(worker.error)
+            self.assertEqual(set(worker.result["resources"]), set(resources))
+            self.assertEqual(api.call_count, 1)
+            self.assertIn("resources=" + ",".join(resources), api.call_args.args[0])
+
+    def test_old_ack_migrates_once_and_background_avoids_assistant_file(self):
+        from assistant_data import read_protected, write_protected
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = SimpleNamespace(root=root)
+            legacy = {"preferences": {"revision": 3, "data": {}}, "assistants": {"revision": 7, "data": {"members": {}}}}
+            write_protected(root / "sync.json", legacy)
+            self.assertNotIn("assistants", DesktopAccountSync.sync_ack(state))
+            with patch("account_sync.read_protected", wraps=read_protected) as read:
+                self.assertNotIn("assistants", DesktopAccountSync.sync_ack(state))
+                self.assertEqual([call.args[0].name for call in read.call_args_list], ["sync-auto.json"])
+            self.assertEqual(DesktopAccountSync.sync_ack(state, True)["assistants"]["revision"], 7)
 
 
 class AccountDocumentTests(unittest.TestCase):

@@ -1,0 +1,90 @@
+"""Browser acceptance of the chat and administration workflow, using a local upstream."""
+import os
+from pathlib import Path
+from playwright.sync_api import sync_playwright, expect
+from tests.test_web_chat import WebChatTests
+
+
+def main():
+    dest = Path(__file__).resolve().parents[1] / 'artifacts/verification/web-chat'
+    dest.mkdir(parents=True, exist_ok=True)
+    WebChatTests.setUpClass()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            context = browser.new_context(viewport={'width':1440,'height':1000})
+            page = context.new_page(); errors=[]
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            page.goto(WebChatTests.url+'/admin')
+            page.locator('#admin-password').fill('admin123');page.locator('#admin-login button').click()
+            expect(page.locator('#admin-panel')).to_be_visible()
+            expect(page.locator('.overview-card')).to_have_count(8)
+            page.locator('#model-add').click()
+            page.locator('#provider-label').fill('测试线路')
+            page.locator('#provider-base').fill(WebChatTests.base)
+            page.locator('#provider-key').fill('fixture-secret-key')
+            page.locator('#provider-discover').click()
+            page.locator('#provider-discovered button').filter(has_text='fixture-model').click()
+            page.locator('#provider-form [type=submit]').click()
+            expect(page.locator('.model-card')).to_have_count(1)
+            page.locator('#model-add').click()
+            page.locator('#provider-label').fill('深度思考')
+            page.locator('#provider-base').fill(WebChatTests.base)
+            page.locator('#provider-key').fill('fixture-secret-key')
+            page.locator('#provider-models').fill('second-model')
+            page.locator('#provider-form [type=submit]').click()
+            expect(page.locator('.model-card')).to_have_count(2)
+            page.locator('#model-add').click()
+            page.locator('#provider-label').fill('视觉助手')
+            page.locator('#provider-base').fill(WebChatTests.base)
+            page.locator('#provider-key').fill('fixture-secret-key')
+            page.locator('#provider-models').fill('vision-model')
+            page.locator('#provider-form [type=submit]').click()
+            expect(page.locator('.model-card')).to_have_count(3)
+            page.screenshot(path=str(dest/'admin-desktop.png'),full_page=True)
+            page.locator('#user-create').click()
+            page.locator('#user-email').fill('browser@example.test')
+            page.locator('#user-password').fill('FixturePass-123')
+            page.locator('#user-form [type=submit]').click()
+            expect(page.locator('#admin-users')).to_contain_text('browser@example.test')
+            page.locator('#user-search').fill('browser@example.test')
+            expect(page.locator('#admin-users tr:visible')).to_have_count(1)
+            page.goto(WebChatTests.url+'/#chat')
+            page.locator('#settings-open').click()
+            expect(page.locator('#settings-admin')).to_be_visible()
+            page.locator('[data-close=settings-dialog]').click()
+            expect(page.locator('#chat-model option')).to_have_count(3)
+            page.locator('#chat-model').select_option(label='测试线路 / fixture-model')
+            page.screenshot(path=str(dest/'chat-welcome.png'),full_page=True)
+            page.locator('#chat-files').set_input_files({'name':'分析资料.txt','mimeType':'text/plain','buffer':'这是用于附件测试的资料。'.encode()})
+            expect(page.locator('#chat-attachments .chat-file-chip')).to_have_count(1)
+            page.locator('#chat-attachments .chat-file-remove').click()
+            expect(page.locator('#chat-attachments .chat-file-chip')).to_have_count(0)
+            page.locator('#chat-files').set_input_files({'name':'分析资料.txt','mimeType':'text/plain','buffer':'这是用于附件测试的资料。'.encode()})
+            page.locator('#chat-input').fill('你好');page.locator('#chat-send').click()
+            expect(page.locator('.chat-message.assistant .chat-message-body')).to_have_text('你好，测试回复')
+            expect(page.locator('.chat-message.user .chat-file-chip')).to_have_count(1)
+            expect(page.locator('#chat-attachments .chat-file-chip')).to_have_count(0)
+            page.locator('#chat-input').fill('继续');page.locator('#chat-send').click()
+            expect(page.locator('.chat-message.assistant')).to_have_count(2)
+            page.screenshot(path=str(dest/'chat-desktop.png'),full_page=True)
+            # Failure retains the user's draft and removes the pending message.
+            page.route('**/api/chat/stream',lambda route:route.fulfill(status=502,json={'error':'测试连接失败'}))
+            page.locator('#chat-input').fill('保留这个问题');page.locator('#chat-send').click()
+            expect(page.locator('#chat-status')).to_contain_text('输入和附件已保留')
+            expect(page.locator('#chat-input')).to_have_value('保留这个问题')
+            page.unroute('**/api/chat/stream')
+            page.locator('#chat-new').click();expect(page.locator('.chat-message')).to_have_count(0)
+            page.set_viewport_size({'width':390,'height':844})
+            page.screenshot(path=str(dest/'chat-mobile.png'),full_page=True)
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile page overflow'
+            page.locator('#mobile-settings').click();page.locator('#account-logout').click()
+            expect(page.locator('#chat-send')).to_be_disabled()
+            assert not errors, errors
+            browser.close()
+            print('PASS browser: model discovery/save, overview, create/search users, admin settings, multi-turn chat, retry draft, mobile layout, logout')
+            print(dest)
+    finally: WebChatTests.tearDownClass()
+
+
+if __name__ == '__main__': main()

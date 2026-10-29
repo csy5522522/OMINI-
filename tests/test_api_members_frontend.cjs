@@ -1,28 +1,33 @@
-/* Exercise API member controls against the real cloud workspace controller. */
+/* Retired web assistant UI must never replay old credential drafts. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {JSDOM}=require('../scripts/memo-editor/node_modules/jsdom');
 const {indexedDB}=require('../.cache/web-test/node_modules/fake-indexeddb');
 const {webcrypto}=require('node:crypto');
 const root=path.join(__dirname,'..');
-const dom=new JSDOM(fs.readFileSync(path.join(root,'web/index.html'),'utf8'),{url:'http://localhost/#ai_assistants',runScripts:'outside-only'});
+const dom=new JSDOM(fs.readFileSync(path.join(root,'web/index.html'),'utf8'),{url:'http://localhost/#timetable',runScripts:'outside-only'});
 const {window}=dom,{document}=window,$=selector=>document.querySelector(selector);
-for(const dialog of document.querySelectorAll('dialog')){
-  dialog.showModal=()=>{dialog.open=true;};
-  dialog.close=()=>{dialog.open=false;dialog.dispatchEvent(new window.Event('close'));};
-}
-const resources={preferences:{revision:1,data:{theme:'浅色'}},schedule:{revision:0,data:{}},assistants:{revision:1,data:{members:{'codex-fixture.json':{type:'codex',email:'fixture@example.test',access_token:'fixture-access',refresh_token:'fixture-refresh'}}}}};
+for(const dialog of document.querySelectorAll('dialog')){dialog.showModal=()=>{dialog.open=true;};dialog.close=()=>{dialog.open=false;};}
+let account={id:'account-a',email:'a@example.test'},blocked='',release=null;
 const writes=[];
-let account={id:'fixture-user',email:'fixture@example.test'};
+const privateSchedule={schema:1,year:'2026',term:'3',updated_at:'fixture',period_times:{},courses:[{name:'ACCOUNT A PRIVATE',teacher:'fixture',location:'fixture',weekday:1,periods:[1],weeks:[1],week_text:'1',campus:'',credits:'',class_name:''}]};
+const resources={preferences:{revision:1,data:{theme:'浅色',concurrency:2}},schedule:{revision:0,data:{}},assistants:{revision:0,data:{}}};
 Object.assign(window,{console,indexedDB,TextEncoder,TextDecoder,matchMedia:()=>({matches:false}),confirm:()=>true,
   setTimeout:()=>1,clearTimeout:()=>{},setInterval:()=>1,
   fetch:async(url,options={})=>{
-    const response=data=>({ok:true,status:200,json:async()=>structuredClone(data)});
+    const body=options.body?JSON.parse(options.body):null;
+    if(body)writes.push({url,body});
+    const response=value=>({ok:true,status:200,json:async()=>structuredClone(value)});
+    if(url===blocked){blocked='';await new Promise(resolve=>{release=resolve;});}
+    if(url==='/api/announcements')return response({announcements:[]});
     if(url==='/api/auth/session')return response({authenticated:true,user:account});
-    if(url==='/api/state')return response({features:{timetable:true,notes:false,ai_assistants:true},version:'fixture'});
+    if(url==='/api/state')return response({features:{timetable:true,notes:true},version:'fixture'});
+    if(url==='/api/timetable')return response({schedule:null,first_monday:'',selected_week:0});
+    if(url.startsWith('/api/timetable/'))return response({schedule:privateSchedule,first_monday:'2026-10-19',revision:2});
     if(url.startsWith('/api/sync?'))return response({resources,conflicts:[]});
-    if(url.startsWith('/api/sync/')&&options.method==='POST'){
-      const name=url.split('/').at(-1),body=JSON.parse(options.body);
-      writes.push({name,body});resources[name]={revision:body.revision+1,data:body.data};return response(resources[name]);
+    if(url==='/api/sync/preferences'){
+      // Stale same-field edits are retained as server-side conflicts.
+      if(body.revision===resources.preferences.revision)resources.preferences={revision:body.revision+1,data:body.data};
+      return response(resources.preferences);
     }
     return response({ok:true});
   }});
@@ -30,66 +35,30 @@ Object.defineProperty(window,'crypto',{value:webcrypto});
 const context=dom.getInternalVMContext(),run=code=>vm.runInContext(code,context);
 const tick=async()=>{for(let i=0;i<8;i++)await new Promise(setImmediate);};
 async function until(test){for(let i=0;i<250&&!test();i++)await tick();assert.ok(test());}
-function submit(){ $('#cloud-api-form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})); }
-async function synced(){await until(()=>!run('cloudBusy')&&run('Object.keys(cloudPending).length')===0);}
-(async()=>{
-  for(const file of ['web/draft-store.js','web/app.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
-  await until(()=>run('cloudReady&&!cloudBusy'));
-  $('#cloud-add-api').click();
-  assert.ok($('#cloud-api-dialog').open);
-  assert.equal($('#cloud-api-protocol').options.length,8);
-  $('#cloud-api-label').value='API <fixture>';
-  $('#cloud-api-url').value='https://fixture.example.test/v1';
-  $('#cloud-api-key').value='fixture-private-key';
-  $('#cloud-api-models').value='upstream-model => public-model';
-  $('#cloud-api-headers').value='[]';
-  submit();await tick();
-  assert.ok($('#cloud-api-error').textContent);
-  assert.equal(writes.length,0);
-  $('#cloud-api-headers').value='{"X-Fixture":"fixture-private-header"}';
-  $('#cloud-api-models').value='model a';submit();await tick();
-  assert.equal(writes.length,0);
-  $('#cloud-api-models').value='upstream-model => public-model\nother-model => public-model';submit();await tick();
-  assert.equal(writes.length,0);
-  $('#cloud-api-models').value='upstream-model => public-model';
-  submit();await synced();await tick();
-  const name=Object.keys(resources.assistants.data.pool.api_members)[0];
-  assert.match(name,/^api-[a-f0-9]{32}$/);
-  assert.equal(resources.assistants.data.pool.api_members[name].api_key,'fixture-private-key');
-  assert.equal(resources.assistants.data.pool.api_members[name].models[0].alias,'public-model');
-  assert.equal($('#cloud-api-key').value,'');
-  assert.ok(!$('#cloud-api-dialog').open);
-  const list=$('#cloud-members');
-  assert.equal(list.querySelectorAll('[data-member]').length,2,'API and OAuth members share the list');
-  assert.ok(!list.innerHTML.includes('fixture-private-key'));
-  assert.ok(!list.innerHTML.includes('fixture-private-header'));
-  assert.ok(list.textContent.includes('API <fixture>'));
-  assert.equal(list.querySelector('fixture'),null,'Member labels are escaped');
-  const row=()=>list.querySelector(`[data-member="${name}"]`);
-  row().querySelector('[data-api-edit]').click();
-  assert.equal($('#cloud-api-key').value,'fixture-private-key');
-  $('#cloud-api-key').value='fixture-rotated-key';
-  $('#cloud-api-protocol').value='responses';
-  submit();await synced();await tick();
-  assert.equal(Object.keys(resources.assistants.data.pool.api_members).length,1);
-  assert.equal(resources.assistants.data.pool.api_members[name].protocol,'responses');
-  assert.equal(resources.assistants.data.pool.api_members[name].api_key,'fixture-rotated-key');
-  row().querySelector('[data-member-toggle]').click();await synced();
-  assert.equal(resources.assistants.data.pool.api_members[name].disabled,true);
-  const weight=row().querySelector('[data-rule="weight"]');weight.value='3';weight.dispatchEvent(new window.Event('change',{bubbles:true}));await synced();
-  assert.equal(resources.assistants.data.pool.member_rules[name].weight,3);
-  row().querySelector('[data-api-edit]').click();
-  run('requireLogin()');
-  assert.ok(!$('#cloud-api-dialog').open);
-  assert.equal($('#cloud-api-key').value,'');
-  account={id:'fixture-user',email:'fixture@example.test'};run(`setAuth({authenticated:true,user:${JSON.stringify(account)}})`);
+function switchAccount(){run('requireLogin()');account={id:'account-b',email:'b@example.test'};run(`setAuth({authenticated:true,user:${JSON.stringify(account)}})`);}
+function submit(id){$(id).dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));}
+async function beginA(){
+  run('requireLogin()');account={id:'account-a',email:'a@example.test'};run(`setAuth({authenticated:true,user:${JSON.stringify(account)}})`);
   await run('loadAccountSync(true)');
-  row().querySelector('[data-member-delete]').click();await synced();
-  assert.equal(Object.keys(resources.assistants.data.pool.api_members).length,0);
-  assert.ok(resources.assistants.data.members['codex-fixture.json']);
-  assert.equal(resources.assistants.data.pool.member_rules[name],undefined);
-  const rebased=run(`rebaseCloudData({pool:{api_members:{'api-one':{api_key:'old',base_url:'old'}}}},{pool:{api_members:{'api-one':{api_key:'local',base_url:'old'}}}},{pool:{api_members:{'api-one':{api_key:'old',base_url:'remote'}}}})`);
-  assert.equal(rebased.pool.api_members['api-one'].api_key,'local');
-  assert.equal(rebased.pool.api_members['api-one'].base_url,'old','A key and endpoint remain atomic');
-  console.log('PASS: eight protocols, validation, API/OAuth mixed list, escaped labels, edit, toggle, weight, delete, account isolation and atomic rebase');
+}
+(async()=>{
+  run(fs.readFileSync(path.join(root,'web/draft-store.js'),'utf8'));
+  await run("cloudDraftStore.save('account-a',{assistants:{revision:0,data:{members:{'old.json':{access_token:'fixture-private-token'}}}},preferences:{revision:1,data:{theme:'深色',concurrency:2}}})");
+  run(fs.readFileSync(path.join(root,'web/app.js'),'utf8'));
+  run(fs.readFileSync(path.join(root,'web/account-sync.js'),'utf8'));
+  await until(()=>run('cloudReady&&!cloudBusy'));
+  assert.equal($('#page-ai_assistants'),null);
+  assert.equal($('#cloud-api-form'),null);
+  assert.equal($('[data-page="ai_assistants"]'),null);
+  assert.equal(run('cloudPending.assistants'),undefined);
+  assert.equal(run('cloudResources.assistants'),undefined);
+  assert.equal(writes.some(write=>write.url==='/api/sync/assistants'),false);
+  assert.equal(resources.preferences.data.theme,'深色','Non-assistant drafts still upload');
+  run('location.hash="#ai_assistants";route()');
+  assert.equal(run('activePage'),'timetable');
+  await assert.rejects(run("queueCloudData('assistants',{members:{}})"),/同步资源有误/);
+  run('requireLogin()');
+  assert.equal(run('Object.keys(cloudResources).length'),0);
+  assert.equal(writes.some(write=>JSON.stringify(write.body).includes('fixture-private-token')),false);
+  console.log('PASS removed assistant UI, old bookmarks, encrypted legacy drafts and logout never transfer assistant credentials');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>dom.window.close());

@@ -273,7 +273,7 @@ class EmailWebTests(unittest.TestCase):
         response = self.post("/api/settings", {"features": {"timetable": False}})
         self.assertEqual(response.status_code, 200, response.text)
         state = self.get("/api/state").json()
-        self.assertEqual(state["features"], {"timetable": False, "notes": True, "ai_assistants": True})
+        self.assertEqual(state["features"], {"timetable": False, "notes": True})
         self.assertEqual(self.get("/api/timetable").status_code, 403)
         self.assertEqual(self.post("/api/tasks", {"type": "file", "source": "https://example.test/a"}).status_code, 404)
         for features in ([], {"bad": True}, {"timetable": "false"}, {"downloads": 1}):

@@ -18,7 +18,7 @@ let failImport = false;
 let failLogin = false;
 const authState = {authenticated:true,user:{id:'fixture-user',email:'member@example.test'},access_password_required:false};
 const fixtureTask = {id:'fixture-task',type:'file',source:'https://example.test/file.bin',title:'Sample file',status:'queued',progress:0,speed:'—',eta:'—',error:''};
-const state = {version:'1.2.2-web',features:{timetable:true,notes:true,ai_assistants:true}};
+const state = {version:'1.2.2-web',features:{timetable:true,notes:true}};
 const stored = new Map();
 const scheduleData = {schedule:null,first_monday:'',selected_week:0};
 for (const dialog of document.querySelectorAll('dialog')) {
@@ -34,6 +34,8 @@ for (const checkbox of document.querySelectorAll('input[type="checkbox"]')) {
 }
 document.hidden = false;
 window.open = () => {};
+window.location={origin:'http://127.0.0.1'};
+window.postMessage=()=>{};
 window.URL = {createObjectURL:()=>{exported=true;return 'blob:test';},revokeObjectURL:()=>{}};
 const context = vm.createContext({
   document,window,console,location:{hash:'#timetable'},Date,Blob,URL:window.URL,
@@ -50,6 +52,7 @@ const context = vm.createContext({
       if(failLogin){status=401;result={error:'邮箱或密码不正确。'};}
       else{authState.authenticated=true;authState.user={id:'fixture-user',email:(data.email||'member@example.test').trim().toLowerCase()};result={user:authState.user};}
     }
+    else if(url==='/api/announcements')result={announcements:[]};
     else if(url==='/api/state')result=state;
     else if(url==='/api/timetable')result=scheduleData;
     else if(url==='/api/tasks'){state.tasks.unshift({...fixtureTask});result={task:fixtureTask};}
@@ -85,8 +88,9 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal($('#account-label').textContent,'member@example.test');
     console.log('PASS timetable is the default page; download controls are absent');
 
-    click('#mobile-theme');assert.equal(document.documentElement.dataset.theme,'dark');
-    click('#theme-toggle');assert.equal(document.documentElement.dataset.theme,'light');
+    const initialTheme=document.documentElement.dataset.theme;
+    click('#mobile-theme');assert.notEqual(document.documentElement.dataset.theme,initialTheme);
+    click('#theme-toggle');assert.equal(document.documentElement.dataset.theme,initialTheme);
     click('#mobile-settings');assert.equal($('#settings-dialog').open,true);
     submit('#settings-form');await tick();
     assert.equal($('#settings-dialog').open,false);
@@ -109,9 +113,9 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal(run('dayOffset(atDay("2026-03-02"),atDay("2026-03-09"))'),7);
     console.log('PASS weekly/all-semester view, split periods, overlap layout and course detail');
 
-    click('#demo-toggle');assert.match($('#semester-label').textContent,/示例预览/);
+    click('#demo-toggle');assert.equal(run('demo'),true);assert.match($('#schedule-notice').textContent,/示例数据/);
     assert.equal($('#export-schedule').disabled,true);assert.equal(document.querySelectorAll('.course-card').length,9);
-    click('#demo-toggle');assert.match($('#semester-label').textContent,/2026/);
+    click('#demo-toggle');assert.equal(run('demo'),false);
     assert.ok(run('timetable === savedTimetable'));
     $('#first-monday').value='2026-09-07';submit('#semester-form');await tick();
     assert.equal(scheduleData.first_monday,'2026-09-07');
@@ -130,8 +134,8 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     assert.equal($('[data-page="timetable"]').hidden,true);
     assert.equal($('#page-notes').hidden,false);assert.equal($('#page-timetable').hidden,true);
     run('location.hash="#timetable";route()');assert.equal($('#page-timetable').hidden,true);
-    click('#settings-open');$('#feature-notes').checked=false;$('#feature-ai_assistants').checked=false;submit('#settings-form');await tick();
-    assert.equal($('#page-workspace').hidden,false);assert.equal($('[data-page="downloads"]'),null);
+    click('#settings-open');$('#feature-notes').checked=false;submit('#settings-form');await tick();
+    assert.equal($('#page-home').hidden,false);assert.equal($('[data-page="downloads"]'),null);
     click('#choose-features');assert.equal($('#settings-dialog').open,true);
     $('#feature-timetable').checked=true;submit('#settings-form');await tick();
     assert.equal($('#page-timetable').hidden,false);assert.equal($('[data-page="timetable"]').hidden,false);
@@ -143,7 +147,7 @@ const sampleSchedule = {schema:1,year:'2026',term:'3',updated_at:'2026-10-20T12:
     click('#account-open');assert.equal($('#settings-dialog').open,true);click('#account-logout');await tick();
     assert.ok(!$('#login-dialog').open);assert.equal($('#settings-dialog').open,false);
     assert.equal(run('timetable'),null);
-    assert.equal($('#account-label').textContent,'邮箱登录 / 注册');
+    assert.equal($('#account-label').textContent,'登录 / 注册');
     click('#account-open');assert.equal($('#login-dialog').open,true);
     const beforeRegistration=requests.filter(r=>r.url==='/api/auth/register').length;
     click('[data-auth-mode="register"]');assert.equal($('#confirm-fields').hidden,false);

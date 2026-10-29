@@ -1,5 +1,7 @@
 PySide6-Essentials==6.8.3
 requests[socks]>=2.32,<3
+httpx[socks]>=0.28,<1
 Pillow>=11.1,<13
 PyMySQL[rsa]>=1.1,<2
 cryptography>=46,<51
+openpyxl>=3.1.5,<4

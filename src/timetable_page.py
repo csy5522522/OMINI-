@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 import hashlib
 import json
+import base64
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QThread, QTimer, Qt, QUrl
@@ -17,6 +18,9 @@ from PySide6.QtWidgets import (
 
 from campus_network import protect_password, unprotect_password
 from class_timetable_page import ClassTimetablePage
+from timetable_table import import_table
+from school_session_bridge import SchoolSessionBridge
+from project_paths import RESOURCE_ROOT
 from school_timetable import (
     CLASS_PAGE_URL, HOST, LOGIN_URL, PAGE_URL, TERMS, fetch_schedule, import_har, normalize_cookie, validate_cache,
 )
@@ -41,16 +45,17 @@ class TimetableWorker(QThread):
 
 
 class SchoolLoginDialog(QDialog):
-    """The system browser owns the web session; only pasted cookies enter the app."""
+    """Receive an opt-in school session through the browser connector or paste."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.cookie_header = ""
+        self.bridge = None
         self.setWindowTitle("学校课表 · 系统浏览器登录")
         self.resize(720, 340)
         layout = QVBoxLayout(self)
-        note = QLabel("1. 在系统浏览器完成学校统一认证，再打开个人课表。\n"
-                      "2. 导入课表：在浏览器按 F12 → 网络，刷新课表并查询所需学期，导出含响应内容的 HAR；返回工具箱点击「导入 HAR」。\n"
-                      "3. 也可从课表请求的请求标头复制 Cookie，粘贴到下方后点击「读取课表」。会话过期时重新获取。")
+        note = QLabel("1. 在打开的桌面教务连接页面安装并连接「Omini 教务连接」扩展。\n"
+                      "2. 完成学校统一认证后，教务 Cookie 将自动填入这里，点击「读取课表」。\n"
+                      "3. 也可手动粘贴 Cookie，或在导入课表中选择表格、HAR / JSON 文件。")
         note.setWordWrap(True); layout.addWidget(note)
         row = QHBoxLayout()
         login = QPushButton("打开统一认证"); login.clicked.connect(self.open_login)
@@ -65,6 +70,19 @@ class SchoolLoginDialog(QDialog):
         read = QPushButton("读取课表"); read.setObjectName("primary"); read.clicked.connect(self._read)
         close = QPushButton("关闭"); close.clicked.connect(self.reject)
         buttons.addStretch(); buttons.addWidget(read); buttons.addWidget(close); layout.addLayout(buttons)
+        self.poll = QTimer(self); self.poll.setInterval(300); self.poll.timeout.connect(self._receive_session); self.poll.start()
+        self.finished.connect(self._close_bridge)
+
+    def _receive_session(self):
+        if self.bridge and self.bridge.cookie:
+            self.cookie.setText(self.bridge.cookie)
+            self.bridge.cookie = ''
+            self.message.setText("教务会话已自动填入，点击「读取课表」继续。")
+
+    def _close_bridge(self, *_):
+        self.poll.stop()
+        if self.bridge:
+            self.bridge.close(); self.bridge = None
 
     def open_url(self, url):
         if QDesktopServices.openUrl(QUrl(url)):
@@ -73,7 +91,12 @@ class SchoolLoginDialog(QDialog):
             self.message.setText("系统浏览器启动失败，请手动打开：" + url)
 
     def open_login(self):
-        self.open_url(LOGIN_URL)
+        try:
+            if not self.bridge: self.bridge = SchoolSessionBridge(RESOURCE_ROOT / 'web/school-connector.zip')
+            self.open_url(self.bridge.url)
+            self.message.setText("请在连接页面点击浏览器扩展图标，完成学校登录后会自动填入 Cookie。")
+        except OSError as error:
+            self.message.setText(f"浏览器连接启动失败：{error}，可手动粘贴 Cookie。")
 
     def _read(self):
         try:
@@ -115,14 +138,15 @@ class TimetablePage(QWidget):
         subtitle = QLabel("广州华立学院 · 教务系统课表 · 导入后可离线查看")
         subtitle.setObjectName("muted"); layout.addWidget(subtitle)
         actions = QHBoxLayout()
-        self.import_button = QPushButton("导入 HAR"); self.import_button.clicked.connect(self.choose_har)
+        self.import_button = QPushButton("导入课表"); self.import_button.clicked.connect(self.choose_import)
         self.login_button = QPushButton("浏览器登录 / 导入说明"); self.login_button.setObjectName("primary")
         self.login_button.clicked.connect(self.login)
         self.refresh_button = QPushButton("在线刷新"); self.refresh_button.clicked.connect(self.refresh)
         self.class_button = QPushButton("查询班级课表"); self.class_button.clicked.connect(self.open_class_query)
         self.web_button = QPushButton("打开教务网页"); self.web_button.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl(CLASS_PAGE_URL if self.tabs.currentWidget() is self.class_page else PAGE_URL)))
-        for button in (self.import_button, self.login_button, self.refresh_button, self.class_button, self.web_button): actions.addWidget(button)
+        self.login_button.hide()
+        for button in (self.import_button, self.refresh_button, self.class_button, self.web_button): actions.addWidget(button)
         self.session_toggle = QToolButton(); self.session_toggle.setText("会话设置")
         self.session_toggle.setCheckable(True); actions.addWidget(self.session_toggle)
         actions.addStretch(); layout.addLayout(actions)
@@ -156,7 +180,7 @@ class TimetablePage(QWidget):
         for widget in (self.use_start, self.start, self.start_note, self.save_button): date_row.addWidget(widget)
         date_row.addStretch(); date_row.setContentsMargins(0, 0, 0, 0)
         self.date_row = QWidget(); self.date_row.setLayout(date_row); layout.addWidget(self.date_row)
-        self.status = QLabel("点击「导入 HAR」离线读取课表，或在系统浏览器登录后粘贴 Cookie 在线刷新。")
+        self.status = QLabel("点击「导入课表」选择表格、教务系统登录或 HAR / JSON 导入；已连接会话可在线刷新。")
         self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.status)
         self.today_label = QLabel(); self.today_label.setWordWrap(True); self.today_label.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.today_label)
@@ -195,6 +219,7 @@ class TimetablePage(QWidget):
         for widget in (self.import_button, self.login_button, self.refresh_button, self.session_toggle,
                        self.selectors_row, self.date_row, self.status, self.today_label): widget.setVisible(not is_class)
         self.session_box.setVisible(not is_class and self.session_toggle.isChecked())
+        self.login_button.hide()
 
     def open_class_query(self):
         self.tabs.setCurrentWidget(self.class_page)
@@ -245,6 +270,47 @@ class TimetablePage(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "导入学校课表 HAR", str(Path.home() / "Downloads"), "浏览器网络记录 (*.har)")
         if path: self.load_har(path)
 
+    def choose_import(self):
+        dialog = QDialog(self); dialog.setWindowTitle("导入学校课表"); dialog.resize(560, 290)
+        layout = QVBoxLayout(dialog)
+        note = QLabel("选择导入方式。表格按模板填写，每行一条课程安排；学年、学期使用主界面当前选择。")
+        note.setWordWrap(True); layout.addWidget(note)
+        for label, action in (("表格导入（XLSX / CSV / TSV）", self.choose_table),
+                              ("教务系统登录导入（自动填入 Cookie）", self.login),
+                              ("HAR / JSON 文件导入", self.choose_file)):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, callback=action: (dialog.accept(), callback()))
+            layout.addWidget(button)
+        template = QPushButton("下载表格模板"); template.clicked.connect(self.save_table_template); layout.addWidget(template)
+        dialog.exec()
+
+    def save_table_template(self):
+        path, _ = QFileDialog.getSaveFileName(self, "保存课表模板", "课表模板.csv", "CSV (*.csv)")
+        if path:
+            try:
+                Path(path).write_text("课程名称,星期,节次,周次,教师,教室,校区,学分\n高等数学,周一,1-2,1-16周,张老师,A201,广州,3\n", encoding='utf-8-sig')
+            except OSError as error: self.status.setText(str(error))
+
+    def choose_table(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入课表表格", str(Path.home() / "Downloads"), "课表表格 (*.xlsx *.csv *.tsv)")
+        if path:
+            year, term = str(self.year.value()), self.term.currentData()
+            def operation(cancelled):
+                file = Path(path)
+                if file.stat().st_size > 24 * 1024 * 1024: raise ValueError("请选择小于 24 MB 的表格。")
+                content = base64.b64encode(file.read_bytes()).decode() if file.suffix.lower() == '.xlsx' else file.read_text(encoding='utf-8-sig')
+                return import_table(content, file.name, year, term)
+            self._start(operation, "正在导入表格…", importing=True)
+
+    def choose_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入 HAR / JSON", str(Path.home() / "Downloads"), "课表文件 (*.har *.json)")
+        if path:
+            def operation(cancelled):
+                if Path(path).stat().st_size > 24 * 1024 * 1024: raise ValueError("请选择小于 24 MB 的文件。")
+                value = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+                return import_har(path) if isinstance(value, dict) and 'log' in value else validate_cache(value)
+            self._start(operation, "正在导入课表…", importing=True)
+
     def load_har(self, path):
         self._start(lambda cancelled: import_har(path), "正在导入课表…", importing=True)
 
@@ -253,6 +319,7 @@ class TimetablePage(QWidget):
         if self.login_dialog:
             self.login_dialog.raise_(); self.login_dialog.activateWindow(); return
         dialog = SchoolLoginDialog(self)
+        dialog.cookie.setText(self.cookie.text())
         self.login_dialog = dialog
         dialog.finished.connect(self._login_finished)
         dialog.open()
@@ -271,7 +338,8 @@ class TimetablePage(QWidget):
             cookie = normalize_cookie(self.cookie.text())
             year, term = str(self.year.value()), self.term.currentData()
         except ValueError as error:
-            self.status.setText(str(error) + " 请在系统浏览器登录后粘贴课表请求 Cookie，或导入 HAR。")
+            self.status.setText(str(error) + " 请完成教务登录后读取。")
+            self.login()
             return
         self._start(lambda cancelled: fetch_schedule(cookie, year, term, cancelled), "正在从教务系统读取课表…")
 

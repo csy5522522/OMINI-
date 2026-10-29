@@ -194,7 +194,7 @@ class TimetableUiTest(unittest.TestCase):
             page = TimetablePage({}, lambda _: None, cache, lambda v: cache.write_text(json.dumps(v)))
             with patch("timetable_page.QDesktopServices.openUrl", return_value=True) as opener:
                 page.login()
-            self.assertEqual(opener.call_args.args[0].toString(), protocol.LOGIN_URL)
+            self.assertTrue(opener.call_args.args[0].toString().startswith('http://127.0.0.1:'))
             dialog = page.login_dialog
             self.assertFalse(hasattr(dialog, "web"))
             dialog.cookie.setText("a=x\r\nInjected: token"); dialog._read()
@@ -210,6 +210,23 @@ class TimetableUiTest(unittest.TestCase):
             self.assertEqual(fetch.call_args.args[0], "JSESSIONID=LOCAL_TOKEN")
             self.assertEqual(page.list.rowCount(), 2)
             self.assertNotIn("LOCAL_TOKEN", cache.read_text())
+            page.stop(); page.deleteLater(); self.qt.processEvents()
+
+    def test_native_table_import_persists_courses_without_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); cache = root / 'cache.json'
+            table = root / 'courses.csv'
+            table.write_text('课程名称,星期,节次,周次,教师,教室\n线性代数,周二,3-4,1-16周(单),李老师,A202', encoding='utf-8-sig')
+            page = TimetablePage({}, lambda _: None, cache, lambda value: cache.write_text(json.dumps(value)))
+            page.year.setValue(2026)
+            with patch('timetable_page.QFileDialog.getOpenFileName', return_value=(str(table), '')):
+                page.choose_table()
+                self.until(lambda: page.worker is None)
+            self.assertEqual(page.list.rowCount(), 1)
+            saved = json.loads(cache.read_text())
+            self.assertEqual(saved['courses'][0]['name'], '线性代数')
+            self.assertEqual(saved['courses'][0]['weeks'], list(range(1, 17, 2)))
+            self.assertEqual(page.cookie.text(), '')
             page.stop(); page.deleteLater(); self.qt.processEvents()
 
 

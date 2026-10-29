@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Omini 教务连接",
+  "version": "1.1.0",
+  "description": "在当前工具箱页面连接学校教务会话，用于课表导入和在线更新。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "cookies",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://jw.hualixy.edu.cn/*",
+    "https://omini.xin/*",
+    "https://my.omini.xin/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://omini.xin/*",
+        "https://my.omini.xin/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -2,11 +2,15 @@
 
 Windows 桌面工具箱。包含下载中心、校园网、课表、超级备忘录和 AI 配置中心。
 
-当前版本 **1.2.6**，本地 Windows 安装包位置见下方「安装版」说明。[GitHub 已发布版本](https://github.com/csy5522522/OMINI-Tool/releases)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
+网页提供课表、备忘录和公告，管理员在 `/admin` 增删改公告。桌面课表、备忘录与设置继续自动同步；AI 助手数据仅通过设置中的「手动同步全部数据（含 AI 助手）」传输。现有客户端需安装更新包并重启。
+
+网页工作台现已支持全局浅色 / 深色主题与缩放、三协议流式聊天和加密文字历史、图片/PDF/网格 Excel 课表识别，以及抖音、百度、微博、B 站热搜。管理员后台提供独立模型卡片、课表 AI 线路、用户管理与总览表盘。使用说明见 [Web 文档](web/README.md)，接口、数据迁移和验收见 [工作台交付说明](docs/WEB_WORKSPACE_V3.md)。
+
+当前版本 **1.2.7**，本地 Windows 安装包位置见下方「安装版」说明。[GitHub 已发布版本](https://github.com/csy5522522/OMINI-Tool/releases)。更新内容见 [CHANGELOG.md](CHANGELOG.md)，发布流程见 [版本管理说明](docs/RELEASING.md)。
 
 ## 统一账号与超级备忘录
 
-网页入口：https://my.omini.cn。管理入口：https://my.omini.cn/admin。
+网页入口：https://omini.xin。管理入口：https://omini.xin/admin。
 
 桌面侧栏点击「账号与同步」，或进入「设置 → 账号与同步」。选择「登录」填写邮箱和密码；新用户选择「注册」，填写邮箱、密码及确认密码后点击「创建账号」。登录后在「超级备忘录」使用同一账号的文字、图片与历史版本。网页端提供相同的注册和登录功能。邮箱是账号标识，本版未接入邮件验证码。
 
@@ -16,9 +20,9 @@ Windows 桌面工具箱。包含下载中心、校园网、课表、超级备忘
 
 未登录的本机加密备忘录与账号缓存分开保存。1.2.3 起，首次关联的账号登录时自动合并本机笔记、图片、全部历史和回收站，原文件保留；重复登录只合并新增动作，其他账号继续隔离。工作区菜单中的「导入本机备忘录」可手动合并其他目录，保留真实标题与历史。账号缓存按服务地址和账号隔离，自动保存至加密工作区，支持 TXT 导入与主动导出。
 
-桌面保留下载中心、校园网、学校课表、超级备忘录、AI 配置中心及设置，固定显示所有工具。网页「偏好设置」仍可选择课表、超级备忘录和 AI 配置中心；网页功能偏好不再隐藏桌面入口。
+桌面保留下载中心、校园网、学校课表、超级备忘录、AI 配置中心及设置，固定显示所有工具。网页「偏好设置」可选择课表和超级备忘录；聊天与热搜提供独立入口，网页功能偏好不隐藏桌面入口。
 
-同一邮箱账号可在多个客户端和网页间同步课表及学期日期、备忘录文字/图片/历史、助手连接配置、Codex 成员凭据与启停状态、调度/权重/模型、额度快照和操作记录。桌面每 15 秒同步账号工作区，备忘录每 20 秒同步；设置中可点击「立即同步全部账号数据」。网页新增「AI 配置中心」页面，可导入、停用、移出成员并修改账号池设置。账号池进程在各电脑本地运行。
+同一邮箱账号可在多个客户端和网页间自动同步课表及学期日期、备忘录文字/图片/历史和设置。桌面每 15 秒同步账号工作区，备忘录每 20 秒同步；助手连接配置、Codex 成员凭据、调度/权重/模型、额度快照和操作记录仅在桌面设置点击「手动同步全部数据（含 AI 助手）」时传输。网页后台管理服务端聊天模型和课表 AI 线路；桌面账号池仍在各电脑本地运行。
 
 账号工作区按服务地址与账号隔离。首次登录会复制本机课表和助手数据到首个账号，保留原文件；其他账号使用独立目录。离线修改保留，记住登录状态后可离线重启继续编辑。并发修改合并独立字段，同字段冲突保留云端值和加密备份，可在客户端「同步备份与恢复」或网页偏好设置恢复冲突字段。程序路径、下载目录、FFmpeg 安装位置、本地代理端口/密钥与进程运行状态按设备保留。
 
@@ -97,11 +101,11 @@ API 线路验证：`py -3.11 -m unittest tests.test_api_members tests.test_accou
 
 ### Windows 安装版
 
-本地安装包位于 `artifacts/installers/1.2.6/Omini工具箱-1.2.6-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.6-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和 AI 账号池引擎自动安装。
+本地安装包位于 `artifacts/installers/1.2.7/Omini工具箱-1.2.7-Setup.exe`，正式发布时 GitHub 附件名为 `Omini-Toolbox-1.2.7-Setup.exe`。双击运行中文安装向导，可选择安装目录并创建桌面 / 开始菜单快捷方式；完整依赖和 AI 账号池引擎自动安装。
 
 默认安装到当前用户的 `%LOCALAPPDATA%/Programs/Omini工具箱/`，无需管理员权限。可从 Windows「已安装的应用」或开始菜单卸载。卸载保留 `%APPDATA%/Omini工具箱/` 中的个人设置、设备身份，以及同步目录中的文件。升级前从托盘退出工具箱，再运行新安装包。
 
-已有完整 `artifacts/releases/1.2.6/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
+已有完整 `artifacts/releases/1.2.7/Omini工具箱/` 发布目录时，使用 Inno Setup 6.7.3+ 执行 `./scripts/build_installer.ps1` 生成安装包；也可用 `-Compiler` 指定 `ISCC.exe` 路径。版本默认读取 `app_version.py`，指定版本时须与源码一致。
 
 ### 开发用目录发布包
 
@@ -109,11 +113,11 @@ API 线路验证：`py -3.11 -m unittest tests.test_api_members tests.test_accou
 ./build.ps1
 ```
 
-发布结果在 `artifacts/releases/1.2.6/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.6`。
+发布结果在 `artifacts/releases/1.2.7/Omini工具箱/`。请保留该目录中的 `Omini工具箱.exe`、`_internal/` 与 `tools/`，不要单独移动 EXE。当前源码版本为 `1.2.7`。
 
 1.1.6 移除内置浏览器核心与随包 FFmpeg，备忘录替换为原生离线 TXT 笔记。网页统一使用系统浏览器；安装器继续采用 LZMA2 高压缩。构建脚本自动排除 `tools/` 中残留的 FFmpeg 文件，无需手动删除旧开发工具。覆盖升级会清理旧版安装目录中的浏览器运行库和 FFmpeg，个人数据目录保留。
 
-`build.ps1` 下载 yt-dlp 与 CLIProxyAPI 的官方 Windows 发行版、复制本机 aria2c，并将图库和 Spotify 引擎打成独立 Windows 程序。构建后可运行 `py -3.11 scripts/verify_compact_release.py "artifacts/releases/1.2.6/Omini工具箱" --report artifacts/verification/compact-release.json --ffmpeg "本机安装目录/ffmpeg.exe"`，验证 TXT、外部浏览器入口、媒体转换、实际下载和账号池。
+`build.ps1` 下载 yt-dlp 与 CLIProxyAPI 的官方 Windows 发行版、复制本机 aria2c，并将图库和 Spotify 引擎打成独立 Windows 程序。构建后可运行 `py -3.11 scripts/verify_compact_release.py "artifacts/releases/1.2.7/Omini工具箱" --report artifacts/verification/compact-release.json --ffmpeg "本机安装目录/ffmpeg.exe"`，验证 TXT、外部浏览器入口、媒体转换、实际下载和账号池。
 
 应用窗口、托盘、侧栏品牌及 EXE 均使用 `assets/` 中的 Omini 图标；打包时会一并收集图标资源。
 
@@ -146,14 +150,14 @@ M3U8 页签通过 yt-dlp 的 HLS 原生分片下载器获取播放列表，支�
 
 每次认证获取当前连接的重定向参数和页面公钥，按校园网前端的 MAC 拼接、RSA 加密与二次编码流程提交。HAR 仅作为协议参考，未导入其中的密码或旧认证参数。若门户要求验证码，可点击「打开校园网页」。日志仅保留在内存中。
 
-发布目录由 `./build.ps1` 生成到 `artifacts/releases/1.2.6/Omini工具箱/`，请保留完整目录运行。功能回归：`py -3.11 -m unittest tests.test_class_timetable tests.test_douyin tests.test_timetable tests.test_campus tests.test_queue -v`。校园网测试使用隔离配置与本地模拟 HTTP 服务，并与 `tests/fixtures/portal-security.js` 中门户原始 RSA 实现比对。
+发布目录由 `./build.ps1` 生成到 `artifacts/releases/1.2.7/Omini工具箱/`，请保留完整目录运行。功能回归：`py -3.11 -m unittest tests.test_class_timetable tests.test_douyin tests.test_timetable tests.test_campus tests.test_queue -v`。校园网测试使用隔离配置与本地模拟 HTTP 服务，并与 `tests/fixtures/portal-security.js` 中门户原始 RSA 实现比对。
 
 ## 学校课表
 
 侧边栏「学校课表」接入广州华立学院教务系统：`https://jw.hualixy.edu.cn/jwglxt/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default`。
 
-- 点击「导入 HAR」，选择浏览器在查询学生课表后导出的 `.har` 文件。程序读取最新一次有效课表响应，以及同学期同校区的节次时间；支持 Base64 编码的响应。导入后的课表可离线查看，应用重启后自动恢复。
-- 点击「浏览器登录 / 导入说明」，在系统默认浏览器完成学校统一认证，再打开个人课表。在浏览器按 F12 → 网络，刷新并查询课表，导出包含响应内容的 HAR，然后回到工具箱导入。也可从课表请求的请求标头复制 Cookie，粘贴到对话框后读取课表。
+- 点击「导入课表」选择三种方式：表格（XLSX / CSV / TSV）、教务系统登录、HAR / JSON 文件。表格每行一条课程安排，可从导入窗口下载模板；导入后的课表离线保存并在重启后恢复。
+- 教务登录会打开临时本机连接页面。首次安装并连接页面提供的 Chrome / Edge 扩展，完成学校登录后，Cookie 自动填入桌面对话框；点击「读取课表」继续，也支持手动粘贴会话。
 - 点击「在线刷新」使用粘贴的教务会话查询选定学期；会话过期时在系统浏览器重新登录并更新 Cookie。刷新失败会保留已有离线课表。
 - 选择「全学期」或指定周次查看彩色周课表与课程列表。支持不连续周次、单周和双周；双击周课表中的课程查看教师、教室、校区、周次、学分和教学班。相同时间的多条安排合并显示。
 - 勾选「设置第一周周一」，填写学校实际第一周的周一日期并保存，即可用「本周」定位，页面同时显示今日课程。HAR 未提供开学日期时不自动猜测；换学期读取后需要重新设置日期。

@@ -18,7 +18,16 @@ def run_timetable_test(app_module):
     def finish():
         with patch('timetable_page.QDesktopServices.openUrl', return_value=True) as opener:
             page.login()
-            result['external_login'] = opener.call_args.args[0].toString() == LOGIN_URL
+            result['external_login'] = opener.call_args.args[0].toString().startswith('http://127.0.0.1:')
+            import requests
+            response = requests.post(page.login_dialog.bridge.url + 'session', json={'cookie':'JSESSIONID=FIXTURE'}, headers={'Origin':page.login_dialog.bridge.origin}, timeout=5)
+            page.login_dialog._receive_session()
+            result['automatic_cookie'] = response.ok and page.login_dialog.cookie.text() == 'JSESSIONID=FIXTURE'
+            from timetable_table import import_table
+            result['table_import'] = len(import_table('课程名称,星期,节次,周次\n数学,周一,1-2,1-16周', 'fixture.csv', '2026', '3')['courses']) == 1
+            window.set_sidebar_collapsed(True)
+            result['collapsible_sidebar'] = window.sidebar.width() == 84 and window.nav.item(2).text() == '▦'
+            window.set_sidebar_collapsed(False)
             result['no_embedded_browser'] = not hasattr(page.login_dialog, 'web')
             page.login_dialog.reject()
             page.open_class_query()

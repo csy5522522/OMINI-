@@ -57,7 +57,7 @@ def main():
                 page.wait_for_function('() => connected')
                 assert not page.locator('#login-dialog').is_visible()
                 page.wait_for_timeout(2300)
-                assert api_requests == ['auth/session'], api_requests
+                assert api_requests == ['auth/session', 'announcements'], api_requests
                 page.locator('[data-page="notes"]').click()
                 page.wait_for_function('() => typeof loadMemos === "function" && !document.querySelector("#page-notes").hasAttribute("data-feature-pending")')
                 assert not page.locator('#login-dialog').is_visible()
@@ -97,7 +97,7 @@ def main():
                 assert page.locator('#chatgpt-reset-dialog').is_visible()
                 assert '即将上线' in page.locator('#chatgpt-reset-dialog').inner_text()
                 page.locator('[data-close="chatgpt-reset-dialog"]').click()
-                assert api_requests == ['auth/session'], api_requests
+                assert api_requests == ['auth/session', 'announcements'], api_requests
                 link = page.locator('#api-relay-link')
                 assert link.get_attribute('href') == 'https://api.omini.cn'
                 assert link.get_attribute('target') == '_blank'

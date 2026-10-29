@@ -10,7 +10,7 @@ import requests
 
 from campus_network import protect_password, unprotect_password
 
-DEFAULT_SERVICE = "https://my.omini.cn"
+DEFAULT_SERVICE = "https://omini.xin"
 
 
 def service_url(value):

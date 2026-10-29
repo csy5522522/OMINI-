@@ -1361,6 +1361,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget(); self.setCentralWidget(root); layout = QHBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
         sidebar = QFrame(); sidebar.setObjectName("sidebar"); sidebar.setFixedWidth(210); side_layout = QVBoxLayout(sidebar); side_layout.setContentsMargins(14, 22, 14, 18)
+        self.sidebar = sidebar
         brand = QWidget()
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 0, 0, 0)
@@ -1374,12 +1375,16 @@ class MainWindow(QMainWindow):
                 44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
             ))
         logo = QLabel("OMINI\n工具箱")
+        self.brand_caption = logo
         logo.setObjectName("logo")
         brand_layout.addWidget(logo_icon)
         brand_layout.addWidget(logo)
         brand_layout.addStretch()
         side_layout.addWidget(brand)
-        side_layout.addSpacing(24)
+        side_layout.addSpacing(40)
+        self.sidebar_toggle = QPushButton("‹  折叠菜单")
+        self.sidebar_toggle.clicked.connect(lambda: self.set_sidebar_collapsed(not self.settings.get("sidebar_collapsed", False)))
+        side_layout.addWidget(self.sidebar_toggle)
         self.nav = QListWidget(); self.nav.setObjectName("navigation")
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for label in ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  超级备忘录", "⚙  设置", "◇  AI 配置中心"):
@@ -1395,6 +1400,7 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.theme_button)
         side_layout.addSpacing(12)
         tip = QLabel("下载引擎在本地运行\nCookie 按任务临时使用")
+        self.sidebar_tip = tip
         tip.setObjectName("muted"); tip.setWordWrap(True); side_layout.addWidget(tip)
         layout.addWidget(sidebar)
         self.stack = QStackedWidget()
@@ -1416,6 +1422,32 @@ class MainWindow(QMainWindow):
         self.nav.setCurrentRow(selected)
         layout.addWidget(self.stack, 1)
         about = QAction("关于", self); about.triggered.connect(lambda: QMessageBox.about(self, APP_NAME, f"Omini工具箱\n版本 {APP_VERSION}\n下载中心 · 校园网自动登录 · 学校课表 · 超级备忘录 · AI 配置中心")); self.menuBar().addAction(about)
+
+        updates = QAction("公告", self)
+        updates.triggered.connect(lambda: QDesktopServices.openUrl(QUrl("https://omini.xin/#announcements")))
+        self.menuBar().addAction(updates)
+        self.set_sidebar_collapsed(bool(self.settings.get("sidebar_collapsed", False)), save=False)
+
+    def set_sidebar_collapsed(self, collapsed, save=True):
+        self.settings["sidebar_collapsed"] = collapsed
+        self.sidebar.setFixedWidth(84 if collapsed else 210)
+        self.brand_caption.setVisible(not collapsed)
+        self.sidebar_tip.setVisible(not collapsed)
+        self.sidebar_toggle.setText("›" if collapsed else "‹  折叠菜单")
+        self.sidebar_toggle.setToolTip("展开菜单" if collapsed else "折叠菜单")
+        self.sidebar_toggle.setAccessibleName(self.sidebar_toggle.toolTip())
+        labels = ("↓  下载中心", "◎  校园网自动登录", "▦  学校课表", "▤  超级备忘录", "⚙  设置", "◇  AI 配置中心")
+        for index, label in enumerate(labels):
+            self.nav.item(index).setText(label[0] if collapsed else label)
+            self.nav.item(index).setToolTip(label[3:])
+        self.update_account_label(self.settings_page.account.user)
+        self.apply_sidebar_theme_label()
+        if save: save_json(SETTINGS_FILE, self.settings)
+
+    def apply_sidebar_theme_label(self):
+        dark = self.settings.get("theme", "深色") == "深色"
+        self.theme_button.setText(("☀" if dark else "☾") if self.settings.get("sidebar_collapsed", False)
+                                 else ("☀  切换白天模式" if dark else "☾  切换黑夜模式"))
 
     @staticmethod
     def page_attribute(feature):
@@ -1471,6 +1503,7 @@ class MainWindow(QMainWindow):
     def update_account_label(self, user):
         suffix = "（待登录）" if user and not self.settings_page.account.token else ""
         self.account_button.setText("✉  " + user["email"] + suffix if user else "✉  账号与同步")
+        if self.settings.get("sidebar_collapsed", False): self.account_button.setText("✉")
         self.account_button.setToolTip(user["email"] if user else "打开账号与同步设置")
 
     def prepare_account_switch(self):
@@ -1523,6 +1556,7 @@ class MainWindow(QMainWindow):
         dark = self.settings.get("theme", "深色") == "深色"
         self.theme_button.setText("☀  切换白天模式" if dark else "☾  切换黑夜模式")
         self.theme_button.setToolTip("当前：黑夜模式" if dark else "当前：白天模式")
+        self.apply_sidebar_theme_label()
         self.settings_page.theme.setCurrentText("深色" if dark else "浅色")
         # Keep menus and editor selections consistent with the current theme.
         palette = QPalette()

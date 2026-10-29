@@ -8,6 +8,8 @@ from datetime import date
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -23,12 +25,18 @@ from PySide6.QtCore import QCoreApplication, QTimer
 
 import app as desktop
 import school_timetable as school
+from timetable_table import import_table
+from school_login import SchoolLoginService
 from accounts import AccountStore
+from announcements import AnnouncementStore, AnnouncementConflict
 from account_data import AccountDataStore, RESOURCES
 from database import secret
 from memo_store import MemoStore, MemoConflict
 from feature_config import WEB_FEATURES, enabled_features, validate_features
 from web_assets import StaticAssets
+from web_chat import ChatService
+from timetable_ai import TimetableAIService, normalize_preview
+from trends import TrendsService
 
 ROOT = PROJECT_ROOT
 STATIC = desktop.resource_path("web")
@@ -37,9 +45,9 @@ PUBLIC_ASSETS = StaticAssets({
     "/admin": (STATIC / "admin.html", "text/html; charset=utf-8"),
     "/admin/": (STATIC / "admin.html", "text/html; charset=utf-8"),
     **{f"/{name}.js": (STATIC / f"{name}.js", "text/javascript; charset=utf-8")
-       for name in ("app", "memos", "memo-editor", "account-sync", "draft-store", "admin")},
+       for name in ("app", "memos", "memo-editor", "account-sync", "draft-store", "admin", "chat", "appearance", "trends", "timetable-ai", "admin-timetable-ai")},
     **{f"/{name}.css": (STATIC / f"{name}.css", "text/css; charset=utf-8")
-       for name in ("style", "memos", "account-sync")},
+       for name in ("style", "memos", "account-sync", "workspace", "chat-stream", "trends", "timetable-ai")},
     "/favicon.ico": (desktop.resource_path("assets/omini_icon.ico"), "image/x-icon"),
 })
 MAX_BODY = 32 * 1024 * 1024
@@ -55,13 +63,20 @@ class WebState:
         self.lock = threading.RLock()
         self.password = password
         self.accounts = AccountStore(self.data_dir / "accounts.sqlite3")
+        self.announcements = AnnouncementStore(self.accounts.database)
         self.memos = MemoStore(self.accounts.database, key_root=self.data_dir)
         self.account_data = AccountDataStore(self.accounts.database, self.data_dir)
+        self.chat = ChatService(self.account_data)
+        self.timetable_ai = TimetableAIService(self.account_data)
+        self.trends = TrendsService(self.data_dir / 'trends-cache.json')
+        identity_key = Path(os.environ['OMINI_SYNC_KEY_FILE']) if os.environ.get('OMINI_SYNC_KEY_FILE') else self.data_dir/'account-sync.key'
+        self.school_identity_key = hmac.new(identity_key.read_bytes().strip(),b'omini-huali-school-identity-v1',hashlib.sha256).digest()
         admin_password = secret("OMINI_ADMIN_PASSWORD")
         if admin_password: self.accounts.bootstrap_admin(admin_password)
         self.sessions = {}
         self.attempts = {}
         self.stopping = False
+        self.school_login = SchoolLoginService()
 
     def issue_session(self):
         with self.lock:
@@ -94,14 +109,14 @@ class WebState:
     def features(self):
         return enabled_features(self.settings, WEB_FEATURES)
 
-    def check_attempt(self, address, action):
+    def check_attempt(self, address, action, limit=10):
         with self.lock:
             now = time.time()
             self.attempts = {key: [t for t in values if t > now - 60]
                              for key, values in self.attempts.items() if values and values[-1] > now - 60}
             key = (address, action)
             attempts = self.attempts.setdefault(key, [])
-            if len(attempts) >= 10:
+            if len(attempts) >= limit:
                 return False
             attempts.append(now)
             return True
@@ -141,6 +156,55 @@ class Handler(BaseHTTPRequestHandler):
         if not self.user: return self.state.settings
         return self.resource("preferences")["data"]
 
+    def school_owner(self):
+        if not self.user: raise ValueError("请先使用邮箱账号登录工具箱，再连接学校课表。")
+        return (self.user["id"], self.state.session_token(self.headers.get("Cookie")))
+
+    def school_browser(self):
+        jar=SimpleCookie()
+        try:
+            jar.load(self.headers.get('Cookie',''))
+            name='__Host-omini_school_browser' if os.environ.get('OMINI_PUBLIC_ORIGIN','').startswith('https://') else 'omini_school_browser'
+            token=jar[name].value
+            return token if 20<=len(token)<=200 else ''
+        except (CookieError,KeyError,ValueError): return ''
+
+    def school_auth_api(self,path,value):
+        browser=self.school_browser()
+        owner=('school-signin',browser)
+        if path.endswith('/start'):
+            if self.state.password:
+                raise ValueError('此服务设置了访问密码，请先使用邮箱账号登录后连接学校。')
+            address=self.headers.get('X-Real-IP',self.client_address[0]) if os.environ.get('OMINI_PUBLIC_ORIGIN') else self.client_address[0]
+            if not self.state.check_attempt(address,'school-signin',limit=60):
+                return self.respond(429,{'error':'扫码登录较频繁，请一分钟后重试。'})
+            if browser:self.state.school_login.clear_owner(owner)
+            browser=secrets.token_urlsafe(32);owner=('school-signin',browser)
+            result=self.state.school_login.start(owner,value.get('year'),value.get('term'),0)
+            return self.respond(200,result,school_cookie=browser)
+        if path.endswith('/cancel'):
+            if browser:self.state.school_login.cancel(value.get('id'),owner)
+            return self.respond(200,{'ok':True},school_cookie='')
+        if not browser:raise ValueError('扫码登录会话已过期，请重新生成二维码。')
+        completed={}
+        def save(schedule,_revision):
+            identity=self.state.school_login.verified_identity(value.get('id'),owner)
+            hashed=hmac.new(self.state.school_identity_key,identity.encode(),hashlib.sha256).hexdigest()
+            user=self.state.accounts.school_user(hashed)
+            self._user=user
+            result=self.save_schedule(schedule)
+            token=self.state.accounts.issue_session(user)
+            completed.update(user=user,token=token)
+            return result
+        result=self.state.school_login.poll(value.get('id'),owner,save)
+        if result['status']=='complete':
+            if not completed:raise ValueError('扫码登录会话已使用，请重新生成二维码。')
+            self.state.school_login.adopt(value.get('id'),owner,(completed['user']['id'],completed['token']))
+            old=self.state.session_token(self.headers.get('Cookie'))
+            if old:self.state.accounts.revoke_session(old)
+            return self.respond(200,{**result,'user':completed['user']},completed['token'],school_cookie='')
+        return self.respond(200,result)
+
     def resource(self, name, known_revision=None):
         owner = self.user["id"]
         result = self.state.account_data.get(owner, name, known_revision)
@@ -174,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         # Request paths and headers may contain private data.
         pass
 
-    def headers_common(self, content_type, length, cookie=None, *, cache_control="no-store"):
+    def headers_common(self, content_type, length, cookie=None, *, cache_control="no-store",school_cookie=None):
         self.send_header("Content-Type", content_type)
         if length is not None: self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", cache_control)
@@ -185,13 +249,39 @@ class Handler(BaseHTTPRequestHandler):
         if cookie is not None:
             secure = "; Secure" if os.environ.get("OMINI_PUBLIC_ORIGIN", "").startswith("https://") else ""
             self.send_header("Set-Cookie", f"omini_session={cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={43200 if cookie else 0}{secure}")
+        if school_cookie is not None:
+            secure='; Secure' if os.environ.get('OMINI_PUBLIC_ORIGIN','').startswith('https://') else ''
+            name='__Host-omini_school_browser' if secure else 'omini_school_browser'
+            self.send_header('Set-Cookie',f'{name}={school_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={300 if school_cookie else 0}{secure}')
 
-    def respond(self, status, data, cookie=None):
+    def respond(self, status, data, cookie=None, *,school_cookie=None):
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
-        self.headers_common("application/json; charset=utf-8", len(raw), cookie)
+        self.headers_common("application/json; charset=utf-8", len(raw), cookie,school_cookie=school_cookie)
         self.end_headers()
         self.wfile.write(raw)
+
+    def respond_stream(self, run):
+        """Flush normalized SSE frames; closing the client also cancels model I/O."""
+        try:
+            self.send_response(200)
+            self.headers_common('text/event-stream; charset=utf-8', None)
+            self.send_header('X-Accel-Buffering', 'no')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
+            for frame in run.events():
+                if frame is None or frame.get('event') in ('heartbeat', 'ping'):
+                    raw = b': ping\n\n'
+                else:
+                    raw = ('event: ' + frame['event'] + '\ndata: '
+                           + json.dumps(frame['data'], ensure_ascii=False) + '\n\n').encode('utf-8')
+                self.wfile.write(raw)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, OSError):
+            pass
+        finally:
+            run.cancel()
 
     def check_request(self, mutation=False):
         host = self.headers.get("Host", "")
@@ -201,6 +291,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         allowed_origins = {f"http://{host}"}
         if os.environ.get("OMINI_PUBLIC_ORIGIN"): allowed_origins.add(os.environ["OMINI_PUBLIC_ORIGIN"])
+        allowed_origins.update(origin.strip() for origin in os.environ.get("OMINI_PUBLIC_ORIGINS", "").split(',') if origin.strip())
         if origin and origin not in allowed_origins:
             self.respond(403, {"error": "请求来源不匹配。"})
             return False
@@ -230,6 +321,11 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         try:
             if path.startswith("/api/"):
+                if path == "/api/announcements":
+                    return self.respond(200, {"announcements": self.state.announcements.listing()})
+                if path == '/api/trends':
+                    query = parse_qs(urlsplit(self.path).query)
+                    return self.respond(200, self.state.trends.get(force=query.get('refresh', ['0'])[0] == '1'))
                 if path == "/api/auth/session":
                     cookie = self.headers.get("Cookie")
                     remember = self.headers.get("X-Omini-Client") == "desktop" and self.headers.get("X-Omini-Remember") == "1"
@@ -253,25 +349,49 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if not unchanged: self.wfile.write(asset.data)
         except (ValueError, KeyError, TypeError, OSError) as error:
-            self.respond(400, {"error": str(error) if isinstance(error, ValueError) else "读取失败，请重试。"})
+            self.respond(getattr(error, 'status_code', 400), {"error": str(error) if isinstance(error, ValueError) else "读取失败，请重试。"})
         except Exception:
             self.respond(502, {"error": "服务读取失败，请稍后重试。"})
 
     def get_api(self, path):
+        if path.startswith('/api/chat/conversations'):
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            if path == '/api/chat/conversations': return self.respond(200, self.state.chat.history_list(self.user['id']))
+            return self.respond(200, self.state.chat.history_get(self.user['id'], path.rsplit('/', 1)[-1]))
+        if path in ('/api/timetable/ai/routes', '/api/timetable/ai/models'):
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            return self.respond(200, {'models': self.state.timetable_ai.listing()})
+        if path == '/api/chat/models':
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            return self.respond(200, {'models': self.state.chat.listing()})
+        if path == "/api/timetable/school/session":
+            return self.respond(200, {"connected": self.state.school_login.connected(self.school_owner())})
         if path.startswith("/api/sync"):
             if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录同步。"})
             if path == "/api/sync":
-                supplied = parse_qs(urlsplit(self.path).query).get("revisions", ["{}"])[0]
+                query = parse_qs(urlsplit(self.path).query)
+                supplied = query.get("revisions", ["{}"])[0]
                 known = json.loads(supplied)
                 if not isinstance(known, dict): raise ValueError("同步版本列表有误。")
-                return self.respond(200, {"resources": {name: self.resource(name, known.get(name)) for name in RESOURCES},
-                                          "conflicts": self.state.account_data.conflicts(self.user["id"])})
+                # Older desktop clients retain their protocol; new clients explicitly select resources.
+                available = RESOURCES if self.headers.get("X-Omini-Client") == "desktop" else ("preferences", "schedule")
+                selected = query.get("resources", [",".join(available)])[0].split(",")
+                if any(name not in available for name in selected): raise ValueError("同步资源有误。")
+                return self.respond(200, {"resources": {name: self.resource(name, known.get(name)) for name in selected},
+                    "conflicts": [item for item in self.state.account_data.conflicts(self.user["id"]) if item["name"] in selected]})
             if path.startswith("/api/sync/conflicts/"):
-                return self.respond(200, self.state.account_data.conflicts(self.user["id"], path.rsplit("/", 1)[-1]))
+                value = self.state.account_data.conflicts(self.user["id"], path.rsplit("/", 1)[-1])
+                if value.get("name") == "assistants" and self.headers.get("X-Omini-Client") != "desktop":
+                    return self.respond(404, {"error": "此备份请在电脑客户端查看。"})
+                return self.respond(200, value)
             return self.respond(404, {"error": "同步接口不存在。"})
         if path.startswith("/api/admin/"):
             if not self.user or self.user.get("role") != "admin": return self.respond(403, {"error": "请使用管理员账号登录。"})
+            if path == '/api/admin/timetable-ai/providers': return self.respond(200, {'providers': self.state.timetable_ai.listing(private=True)})
+            if path == '/api/admin/overview': return self.respond(200, self.state.chat.overview())
+            if path == '/api/admin/chat/providers': return self.respond(200, {'providers': self.state.chat.listing(private=True)})
             if path == "/api/admin/users": return self.respond(200, {"users": self.state.accounts.list_users(), "version": WEB_VERSION})
+            if path == "/api/admin/announcements": return self.respond(200, {"announcements": self.state.announcements.listing()})
         if path.startswith("/api/memos"):
             if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录备忘录。"})
             owner = self.user["id"]
@@ -305,6 +425,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlsplit(self.path).path
             value = self.read_json()
+            if path in {'/api/auth/school/start','/api/auth/school/poll','/api/auth/school/cancel'}:
+                return self.school_auth_api(path,value)
             if path in {"/api/auth/register", "/api/auth/login"}:
                 address = self.headers.get("X-Real-IP", self.client_address[0]) if os.environ.get("OMINI_PUBLIC_ORIGIN") else self.client_address[0]
                 if not self.state.check_attempt(address, "account"):
@@ -328,6 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.state.sessions.pop(old, None)
                 return self.respond(201 if path.endswith("register") else 200, {"user": user}, token)
             if path == "/api/auth/logout":
+                if self.user: self.state.school_login.clear_owner(self.school_owner())
                 token = self.state.session_token(self.headers.get("Cookie"))
                 self.state.accounts.revoke_session(token)
                 with self.state.lock:
@@ -344,23 +467,60 @@ class Handler(BaseHTTPRequestHandler):
             if not self.feature_available(path):
                 return
             self.post_api(path, value)
-        except MemoConflict as error:
+        except (MemoConflict, AnnouncementConflict) as error:
             self.respond(409, {"error": str(error), "conflict": True})
         except (ValueError, KeyError, TypeError, OSError) as error:
-            self.respond(400, {"error": str(error) if isinstance(error, ValueError) else "操作失败，请检查输入后重试。"})
+            self.respond(getattr(error, 'status_code', 400), {"error": str(error) if isinstance(error, ValueError) else "操作失败，请检查输入后重试。"})
         except Exception:
             self.respond(502, {"error": "服务请求失败，请稍后重试；已有任务和课表已保留。"})
 
     def post_api(self, path, value):
+        if path == '/api/chat/stream':
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            if not self.state.check_attempt(self.user['id'], 'chat'):
+                return self.respond(429, {'error': '请求频繁，请一分钟后重试。'})
+            return self.respond_stream(self.state.chat.open_stream(self.user['id'], value))
+        if path.startswith('/api/chat/runs/') and path.endswith('/cancel'):
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            return self.respond(200, self.state.chat.cancel(self.user['id'], path.split('/')[-2]))
+        if path.startswith('/api/chat/conversations/'):
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            identity = path.rsplit('/', 1)[-1]
+            if value.get('action') == 'delete':
+                return self.respond(200, self.state.chat.history_delete(self.user['id'], identity, value.get('version')))
+            return self.respond(200, self.state.chat.history_update(self.user['id'], identity, value))
+        if path.startswith('/api/timetable/ai/'):
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            if path == '/api/timetable/ai/inspect': return self.respond(200, self.state.timetable_ai.inspect(value))
+            if path == '/api/timetable/ai/validate': return self.respond(200, normalize_preview(value))
+            if path == '/api/timetable/ai/recognize': return self.respond(200, self.state.timetable_ai.recognize(self.user['id'], value))
+        if path == '/api/chat/send':
+            if not self.user: return self.respond(401, {'error': '请先登录账号。'})
+            if not self.state.check_attempt(self.user['id'], 'chat'):
+                return self.respond(429, {'error': '请求频繁，请一分钟后重试。'})
+            return self.respond(200, self.state.chat.send(self.user['id'], value))
         if path.startswith("/api/sync/"):
             if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录同步。"})
             name = path.rsplit("/", 1)[-1]
+            if name == "assistants" and self.headers.get("X-Omini-Client") != "desktop":
+                return self.respond(403, {"error": "助手数据请在电脑客户端手动同步。"})
             result = self.state.account_data.exchange(self.user["id"], name, value.get("revision"), value.get("data"))
             return self.respond(200, result)
         if path.startswith("/api/admin/"):
             if not self.user or self.user.get("role") != "admin": return self.respond(403, {"error": "请使用管理员账号登录。"})
+            if path == '/api/admin/timetable-ai/providers': return self.respond(200, self.state.timetable_ai.save(value))
+            if path == '/api/admin/timetable-ai/models': return self.respond(200, self.state.timetable_ai.discover(value))
+            if path == '/api/admin/chat/providers': return self.respond(200, self.state.chat.save(value))
+            if path == '/api/admin/chat/models': return self.respond(200, self.state.chat.discover(value))
+            if path == '/api/admin/users':
+                return self.respond(201, {'user': self.state.accounts.register(value.get('email'), value.get('password'))})
+            if path == "/api/admin/announcements":
+                return self.respond(200, self.state.announcements.save(value))
             if path == "/api/admin/user":
-                self.state.accounts.manage_user(value.get("id"), disabled=value.get("disabled"), password=value.get("password"))
+                if value.get('action') == 'delete':
+                    self.state.accounts.delete_user(value.get('id'))
+                else:
+                    self.state.accounts.manage_user(value.get("id"), disabled=value.get("disabled"), password=value.get("password"), email=value.get('email'))
                 return self.respond(200, {"ok": True})
         if path.startswith("/api/memos"):
             if not self.user: return self.respond(401, {"error": "请使用邮箱账号登录备忘录。"})
@@ -376,7 +536,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {"memo": self.state.memos.restore(owner, parts[2], value.get("version"), value.get("base_version"), device)})
             return self.respond(404, {"error": "备忘录接口不存在。"})
         if path == "/api/settings":
-            selected = validate_features(value.get("features", {}), WEB_FEATURES)
+            supplied = value.get("features", {})
+            # Ignore the retired web option sent by already-open older tabs.
+            if isinstance(supplied, dict): supplied = {key: flag for key, flag in supplied.items() if key != "ai_assistants"}
+            selected = validate_features(supplied, WEB_FEATURES)
             if self.user:
                 baseline = self.resource("preferences")
                 updated = {**baseline["data"], "features": {**baseline["data"].get("features", {}), **selected}}
@@ -388,12 +551,27 @@ class Handler(BaseHTTPRequestHandler):
                 desktop.save_json(self.state.settings_path, updated)
                 self.state.settings.update(updated)
             return self.respond(200, {"ok": True, "features": self.state.features})
+        if path == "/api/timetable/school/start":
+            owner = self.school_owner()
+            if not self.state.check_attempt(owner[0], "school-login"):
+                return self.respond(429, {"error": "二维码生成较频繁，请一分钟后重试。"})
+            return self.respond(200, self.state.school_login.start(owner, value.get("year"), value.get("term"), value.get("base_revision")))
+        if path == "/api/timetable/school/poll":
+            return self.respond(200, self.state.school_login.poll(value.get("id"), self.school_owner(), self.save_schedule))
+        if path == "/api/timetable/school/cancel":
+            self.state.school_login.cancel(value.get("id"), self.school_owner(), keep_complete=True)
+            return self.respond(200, {"ok": True})
         if path == "/api/timetable/import":
+            if value.get("format") == "school":
+                schedule = school.parse_schedule(value.get("payload"), str(value.get("year", "")), str(value.get("term", "")), value.get("periods"))
+                return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
             content = value.get("content")
             if not isinstance(content, str):
                 raise ValueError("请选择 HAR 或课表 JSON 文件。")
-            payload = json.loads(content)
-            if isinstance(payload, dict) and "log" in payload:
+            payload = None if value.get("format") == "table" else json.loads(content)
+            if value.get("format") == "table":
+                schedule = import_table(content, str(value.get("filename", "")), value.get("year"), value.get("term"))
+            elif isinstance(payload, dict) and "log" in payload:
                 with tempfile.TemporaryDirectory() as temp:
                     file = Path(temp) / "schedule.har"
                     file.write_text(content, encoding="utf-8")
@@ -403,7 +581,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
         if path == "/api/timetable/refresh":
             # Cookie stays in this request; never saved with timetable data.
-            schedule = school.fetch_schedule(str(value.get("cookie", "")), str(value.get("year", "")), str(value.get("term", "")))
+            cookie = str(value.get("cookie", "")).strip()
+            schedule = (school.fetch_schedule(cookie, str(value.get("year", "")), str(value.get("term", ""))) if cookie
+                        else self.state.school_login.refresh(self.school_owner(), value.get("year"), value.get("term")))
             return self.respond(200, self.save_schedule(schedule, value.get("base_revision")))
         if path in {"/api/timetable/semester", "/api/timetable/week"}:
             schedule = self.schedule()
@@ -432,6 +612,8 @@ def make_server(state, host, port):
     server.allowed_hosts = {f"{host}:{actual_port}", f"127.0.0.1:{actual_port}", f"localhost:{actual_port}"}
     public = os.environ.get("OMINI_PUBLIC_ORIGIN", "")
     if public: server.allowed_hosts.add(urlsplit(public).netloc)
+    for origin in os.environ.get("OMINI_PUBLIC_ORIGINS", "").split(','):
+        if origin.strip(): server.allowed_hosts.add(urlsplit(origin.strip()).netloc)
     if host == "127.0.0.1":
         server.allowed_hosts.add(f"localhost:{actual_port}")
     return server
@@ -485,6 +667,8 @@ def main():
     try:
         qt.exec()
     finally:
+        state.chat.close()
+        state.trends.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)

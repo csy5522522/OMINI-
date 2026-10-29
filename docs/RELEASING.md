@@ -64,3 +64,5 @@ py -3.11 scripts/publish_release.py --publish
 1.2.5 安装包验证覆盖精简后的固定桌面导航、独立登录和注册表单、设置保存、账号和备忘录同步，以及旧版 Syncthing 清理。覆盖升级与卸载逐字节核对个人配置、备忘录密钥、登录凭据、成员配置和操作记录保留；测试使用独立注册项及临时安装目录。
 
 1.2.6 增加慢速同步期间输入、中文候选、光标和撤销记录保留，以及云端下载与新本地动作的并发验收。安装器使用 `artifacts/releases/版本/`，结果放入 `artifacts/installers/版本/`；验收报告放入 `artifacts/verification/`。本次只提交源码与文档，不执行发布脚本上传安装包。
+
+1.2.7 增加 `tests.test_timetable_table`、`tests.test_school_session_bridge`、`node tests/test_school_connector.cjs` 和 `python -m tests.web_timetable_import_check`。冻结程序的 `--self-test-timetable` 检查表格导入、临时教务连接会话回填和侧栏折叠。安装包通过独立注册项验证安装、升级、启动及卸载数据保留；官网 https://omini.xin 已部署同版本网页，旧地址保留兼容。

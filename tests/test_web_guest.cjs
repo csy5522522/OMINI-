@@ -18,8 +18,9 @@ Object.assign(window,{console,indexedDB,TextEncoder,TextDecoder,matchMedia:()=>(
     if(url==='/api/auth/session')return response({authenticated:signedIn,user:signedIn?user:null,access_password_required:false});
     if(url==='/api/auth/login'){signedIn=true;return response({user});}
     if(url==='/api/auth/logout'){signedIn=false;return response({ok:true});}
+    if(url==='/api/announcements')return response({announcements:[]});
     if(!signedIn)return response({error:'PRIVATE API REQUIRES LOGIN'},401);
-    if(url==='/api/state')return response({features:{timetable:true,notes:true,ai_assistants:true},version:'fixture'});
+    if(url==='/api/state')return response({features:{timetable:true,notes:true},version:'fixture'});
     if(url==='/api/timetable')return response({schedule:null,first_monday:'',selected_week:0});
     if(url.startsWith('/api/sync?'))return response({resources:{preferences:{revision:0,data:{}},schedule:{revision:0,data:{}},assistants:{revision:0,data:{}}},conflicts:[]});
     if(url==='/api/memos'){
@@ -38,23 +39,23 @@ function submit(id){$(id).dispatchEvent(new window.Event('submit',{bubbles:true,
   for(const file of ['web/draft-store.js','web/app.js','web/memo-editor.js','web/memos.js','web/account-sync.js'])run(fs.readFileSync(path.join(root,file),'utf8'));
   await until(()=>run('connected'));
   assert.ok(!$('#login-dialog').open);
-  assert.deepEqual(requests.map(r=>r.url),['/api/auth/session']);
+  assert.deepEqual(requests.map(r=>r.url),['/api/auth/session','/api/announcements']);
   assert.match($('#memo-empty').textContent,/登录/);
   assert.equal($('#memo-list').querySelectorAll('.memo-list-empty').length,1);
   assert.equal($('#memo-title').disabled,true);
-  await run('refreshState()');run('route()');await tick();assert.equal(requests.length,1);
+  await run('refreshState()');run('route()');await tick();assert.equal(requests.length,2);
   $('#account-open').click();assert.equal($('#login-dialog').open,true);
   const cancel=new window.Event('cancel',{cancelable:true});$('#login-dialog').dispatchEvent(cancel);assert.equal(cancel.defaultPrevented,false);
   $('[data-close="login-dialog"]').click();assert.equal($('#login-dialog').open,false);
   $('#memo-empty-new').click();assert.equal($('#login-dialog').open,true);$('[data-close="login-dialog"]').click();
   $('#chatgpt-reset-open').click();assert.equal($('#chatgpt-reset-dialog').open,true);
   assert.match($('#chatgpt-reset-dialog').textContent,/即将上线/);
-  assert.equal(requests.length,1,'Placeholder must have no side effects');
+  assert.equal(requests.length,2,'Placeholder must have no side effects');
   const link=$('#api-relay-link');assert.equal(link.href,'https://api.omini.cn/');assert.equal(link.target,'_blank');assert.match(link.rel,/noopener/);
   $('[data-close="chatgpt-reset-dialog"]').click();
-  $('#settings-open').click();$('#feature-ai_assistants').checked=false;submit('#settings-form');await tick();
-  assert.equal(requests.length,1,'Guest settings stay in this browser');
-  assert.equal(run('features.ai_assistants'),false);
+  $('#settings-open').click();$('#feature-timetable').checked=false;submit('#settings-form');await tick();
+  assert.equal(requests.length,2,'Guest settings stay in this browser');
+  assert.equal(run('features.timetable'),false);
   console.log('PASS guest browsing avoids private requests; login is dismissible; navigation and local preferences work');
 
   failRead=true;$('#account-open').click();$('#account-email').value=user.email;$('#account-password').value='FixturePassword-123';submit('#login-form');
@@ -80,6 +81,6 @@ function submit(id){$(id).dispatchEvent(new window.Event('submit',{bubbles:true,
   $('#account-open').click();$('#account-logout').click();await until(()=>!run('auth.authenticated'));
   assert.ok(!$('#login-dialog').open);assert.equal(run('memoEditor.getContent()'),'');assert.equal($('#memo-list').querySelectorAll('.memo-item').length,0);
   assert.equal($('#memo-list').textContent,'登录后显示你的备忘录');
-  assert.equal(run('features.ai_assistants'),false);
+  assert.equal(run('features.timetable'),false);
   console.log('PASS logout clears private views and returns to guest preferences without forcing login');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>dom.window.close());

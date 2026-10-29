@@ -8,7 +8,7 @@ DESKTOP_FEATURES = {
     "notes": "超级备忘录",
     "ai_assistants": "AI 配置中心",
 }
-WEB_FEATURES = {key: DESKTOP_FEATURES[key] for key in ("timetable", "notes", "ai_assistants")}
+WEB_FEATURES = {key: DESKTOP_FEATURES[key] for key in ("timetable", "notes")}
 PAGE_FEATURES = ("downloads", "campus", "timetable", "notes", None, "ai_assistants")
 
 
